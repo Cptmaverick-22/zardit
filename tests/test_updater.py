@@ -27,7 +27,9 @@ def make_wheel(files):
 
     with zipfile.ZipFile(buffer, "w") as bundle:
         for name, content in files.items():
-            bundle.writestr(name, content)
+            info = zipfile.ZipInfo(name)
+            info.filename = name
+            bundle.writestr(info, content)
 
     return buffer.getvalue()
 
