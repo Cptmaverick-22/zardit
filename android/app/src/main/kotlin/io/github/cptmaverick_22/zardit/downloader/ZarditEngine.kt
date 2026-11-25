@@ -27,6 +27,10 @@ object ZarditEngine {
     )
 
     private val imageExts = setOf("jpg", "jpeg", "png", "webp")
+    private val ogTagRegex = Regex(
+        """<meta\s+(?:property|name)=["']([^"']+)["']\s+content=["']([^"']+)["']|<meta\s+content=["']([^"']+)["']\s+(?:property|name)=["']([^"']+)["']""",
+        RegexOption.IGNORE_CASE,
+    )
 
     fun isPlaylistUrl(url: String): Boolean {
         val lower = url.lowercase(Locale.US)
@@ -45,7 +49,16 @@ object ZarditEngine {
             fetchPlaylistPreview(cleanUrl)?.let { return it }
         }
 
-        val info = YoutubeDL.getInstance().getInfo(cleanUrl)
+        val info = try {
+            YoutubeDL.getInstance().getInfo(cleanUrl)
+        } catch (t: Throwable) {
+            val msg = t.message.orEmpty()
+            if (msg.contains("No video formats found", ignoreCase = true)) {
+                fetchImageFallback(cleanUrl)?.let { return it }
+            }
+            throw IllegalStateException(friendlyError(msg))
+        }
+
         val formats = info.formats.orEmpty()
         val durationSec = info.duration.coerceAtLeast(0)
 
@@ -111,7 +124,9 @@ object ZarditEngine {
         }
 
         if (videoOptions.isEmpty() && !isPureImage) {
-            val fallbackSize = info.url?.takeIf { it.startsWith("http") }?.let { probeUrlSize(it) }
+            val probeTarget = formats.lastOrNull { !it.url.isNullOrBlank() && it.url!!.startsWith("http") }?.url
+                ?: info.url?.takeIf { it.startsWith("http") }
+            val fallbackSize = probeTarget?.let { probeUrlSize(it) }
             videoOptions = listOf(
                 VideoOption(1080, "1080p", "Full HD", "MP4 · Best available", fallbackSize),
                 VideoOption(720, "720p", "HD", "MP4 · Best available", fallbackSize),
@@ -119,7 +134,6 @@ object ZarditEngine {
             )
         }
 
-        // Estimate audio sizes even when duration == 0 (e.g. Instagram) using probed stream size
         val fallbackVideoSize = videoOptions.firstOrNull { it.approxSizeBytes != null }?.approxSizeBytes
         val audioOptions = defaultAudioOptions.map { opt ->
             val estimated = when {
@@ -154,6 +168,118 @@ object ZarditEngine {
             audioOptions = audioOptions,
             imageUrls = imageUrls,
         )
+    }
+
+    private fun fetchImageFallback(url: String): MediaPreview? {
+        // 1. Try yt-dlp --dump-single-json --ignore-errors for carousel thumbnails
+        runCatching {
+            val req = YoutubeDLRequest(url).apply {
+                addOption("--dump-single-json")
+                addOption("--ignore-errors")
+            }
+            val res = YoutubeDL.getInstance().execute(req, null, null)
+            if (res.out.isNotBlank()) {
+                val json = JSONObject(res.out)
+                val urls = linkedSetOf<String>()
+                val entries = json.optJSONArray("entries")
+                if (entries != null) {
+                    for (i in 0 until entries.length()) {
+                        val obj = entries.optJSONObject(i) ?: continue
+                        val u = obj.optString("url").takeIf { it.startsWith("http") }
+                            ?: obj.optString("thumbnail").takeIf { it.startsWith("http") }
+                        if (u != null) urls.add(u)
+                    }
+                }
+                val mainThumb = json.optString("thumbnail").takeIf { it.startsWith("http") }
+                if (urls.isEmpty() && mainThumb != null) urls.add(mainThumb)
+                if (urls.isNotEmpty()) {
+                    val platform = json.optString("extractor_key", "WEB")
+                        .replace("Tab", "").uppercase(Locale.US)
+                    return MediaPreview(
+                        mediaId = json.optString("id").ifBlank { url.hashCode().toString() },
+                        url = url,
+                        title = json.optString("title").ifBlank { "Image post (${urls.size})" },
+                        author = json.optString("uploader").ifBlank { "${urls.size} image${if (urls.size == 1) "" else "s"}" },
+                        platform = "$platform · IMAGE",
+                        durationText = "${urls.size} image${if (urls.size == 1) "" else "s"}",
+                        thumbnailUrl = urls.first(),
+                        videoOptions = emptyList(),
+                        audioOptions = emptyList(),
+                        imageUrls = urls.toList(),
+                    )
+                }
+            }
+        }
+
+        // 2. Fall back to OpenGraph og:image extraction
+        return runCatching {
+            val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 8000
+                readTimeout = 8000
+                instanceFollowRedirects = true
+                setRequestProperty("User-Agent", "Mozilla/5.0")
+            }
+            val html = conn.inputStream.bufferedReader().use { it.readText().take(512 * 1024) }
+            conn.disconnect()
+
+            val meta = mutableMapOf<String, String>()
+            ogTagRegex.findAll(html).forEach { m ->
+                val key = (m.groupValues[1].ifEmpty { m.groupValues[4] }).lowercase(Locale.US)
+                val valText = m.groupValues[2].ifEmpty { m.groupValues[3] }
+                    .replace("&amp;", "&")
+                    .trim()
+                if (key.isNotEmpty() && valText.isNotEmpty() && key !in meta) {
+                    meta[key] = valText
+                }
+            }
+            val imgUrl = meta["og:image:secure_url"] ?: meta["og:image"] ?: meta["twitter:image"]
+            if (imgUrl.isNullOrBlank() || !imgUrl.startsWith("http")) return@runCatching null
+
+            val platform = detectPlatformName(url).uppercase(Locale.US)
+            val title = meta["og:title"] ?: meta["twitter:title"] ?: "Image post"
+            MediaPreview(
+                mediaId = url.hashCode().toString(),
+                url = url,
+                title = title,
+                author = platform,
+                platform = "$platform · IMAGE",
+                durationText = "1 image",
+                thumbnailUrl = imgUrl,
+                videoOptions = emptyList(),
+                audioOptions = emptyList(),
+                imageUrls = listOf(imgUrl),
+            )
+        }.getOrNull()
+    }
+
+    private fun detectPlatformName(url: String): String {
+        val lower = url.lowercase(Locale.US)
+        return when {
+            "instagram.com" in lower || "instagr.am" in lower -> "Instagram"
+            "facebook.com" in lower || "fb.watch" in lower -> "Facebook"
+            "reddit.com" in lower || "redd.it" in lower -> "Reddit"
+            "twitter.com" in lower || "x.com" in lower -> "X"
+            "threads.net" in lower || "threads.com" in lower -> "Threads"
+            "youtube.com" in lower || "youtu.be" in lower -> "YouTube"
+            else -> "Web"
+        }
+    }
+
+    private fun friendlyError(raw: String): String {
+        val lower = raw.lowercase(Locale.US)
+        return when {
+            "empty media response" in lower || "login" in lower || "cookies" in lower ->
+                "This post requires login or is temporarily rate-limited by the platform. Try updating yt-dlp or retry later."
+            "no video formats found" in lower ->
+                "No downloadable video or image was found at this link."
+            else -> {
+                raw.lineSequence()
+                    .firstOrNull { it.isNotBlank() && !it.contains("github.com/yt-dlp") && !it.contains("yt-dlp -U") }
+                    ?.removePrefix("ERROR:")
+                    ?.trim()
+                    ?: "Could not fetch media info."
+            }
+        }
     }
 
     private fun fetchPlaylistPreview(url: String): MediaPreview? = runCatching {
@@ -235,20 +361,40 @@ object ZarditEngine {
         return result
     }
 
-    private fun probeUrlSize(url: String): Long? = runCatching {
-        val conn = (URL(url).openConnection() as HttpURLConnection).apply {
-            requestMethod = "HEAD"
-            connectTimeout = 3000
-            readTimeout = 3000
-            setRequestProperty("User-Agent", "Mozilla/5.0")
+    private fun probeUrlSize(url: String): Long? {
+        runCatching {
+            val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                requestMethod = "HEAD"
+                instanceFollowRedirects = true
+                connectTimeout = 3000
+                readTimeout = 3000
+                setRequestProperty("User-Agent", "Mozilla/5.0")
+            }
+            try {
+                val len = conn.contentLengthLong
+                if (len > 0L) return len
+            } finally {
+                conn.disconnect()
+            }
         }
-        try {
-            val len = conn.contentLengthLong
-            if (len > 0L) len else null
-        } finally {
-            conn.disconnect()
-        }
-    }.getOrNull()
+        return runCatching {
+            val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                instanceFollowRedirects = true
+                connectTimeout = 3000
+                readTimeout = 3000
+                setRequestProperty("User-Agent", "Mozilla/5.0")
+                setRequestProperty("Range", "bytes=0-0")
+            }
+            try {
+                val contentRange = conn.getHeaderField("Content-Range") ?: return@runCatching null
+                val total = contentRange.substringAfterLast("/").trim().toLongOrNull()
+                if (total != null && total > 0L) total else null
+            } finally {
+                conn.disconnect()
+            }
+        }.getOrNull()
+    }
 
     fun qualityTag(
         mode: DownloadMode,
@@ -389,10 +535,9 @@ object ZarditEngine {
                 }
             }
 
-            YoutubeDL.getInstance().execute(request, processId) { progress, etaInSeconds, line ->
+            YoutubeDL.getInstance().execute(request, processId) { progress, _, line ->
                 val pct = if (progress >= 0f) progress.coerceIn(0f, 100f) else 0f
-                val etaText = if (etaInSeconds > 0) " · ETA ${formatDuration(etaInSeconds.toInt())}" else ""
-                val friendly = ZarditFlavor.formatProgressLine(line, pct, etaText)
+                val friendly = ZarditFlavor.formatProgressLine(line, pct)
                 onProgress(pct, friendly)
             }
 
@@ -416,14 +561,14 @@ object ZarditEngine {
         treeUri: Uri?,
         onProgress: (Float, String) -> Unit,
     ): SaveResult {
-        onProgress(15f, "Using Flash on the image…")
+        onProgress(15f, "15% · Using Flash on the image…")
         val rawBytes = URL(imageUrl).openConnection().run {
             connectTimeout = 10000
             readTimeout = 15000
             setRequestProperty("User-Agent", "Mozilla/5.0")
             getInputStream().use { it.readBytes() }
         }
-        onProgress(70f, "Evolving image format…")
+        onProgress(70f, "70% · Evolving image format…")
 
         val safeTitle = title.replace(Regex("[\\\\/:*?\"<>|]"), "-").take(80).ifBlank { "image" }
         val fileName = "$safeTitle [${format.id}] [$mediaId].${format.ext}"
@@ -451,7 +596,7 @@ object ZarditEngine {
                 }
                 bmp.recycle()
             }
-            onProgress(95f, "Catching into Downloads…")
+            onProgress(95f, "95% · Catching into Downloads…")
             return saveOutputFile(context, tempFile, DownloadMode.IMAGE, treeUri)
         } finally {
             tempFile.delete()

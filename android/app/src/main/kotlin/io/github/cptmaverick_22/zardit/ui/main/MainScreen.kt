@@ -688,16 +688,18 @@ fun MainScreen(
                                 }
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                 ) {
                                     Text(
                                         text = state.statusLine,
                                         style = MaterialTheme.typography.bodySmall,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
                                         modifier = Modifier.weight(1f),
                                     )
                                     OutlinedButton(onClick = { viewModel.cancelDownload() }) {
-                                        Text("Cancel")
+                                        Text("Cancel", maxLines = 1)
                                     }
                                 }
                             }
