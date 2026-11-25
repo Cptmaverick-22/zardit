@@ -31,6 +31,37 @@ def configure_bundled_tools_path():
         os.environ["PATH"] = os.pathsep.join([*prepend, *current_parts])
 
 
+def configure_ssl_certificates():
+    """Ensure frozen builds have a valid CA bundle for stdlib urllib/ssl."""
+
+    if not getattr(sys, "frozen", False):
+        return
+
+    existing = os.environ.get("SSL_CERT_FILE", "")
+    if existing and Path(existing).is_file():
+        return
+
+    try:
+        import certifi
+
+        ca_path = certifi.where()
+        if ca_path and Path(ca_path).is_file():
+            os.environ["SSL_CERT_FILE"] = ca_path
+            return
+    except Exception:
+        pass
+
+    for candidate in (
+        "/etc/ssl/certs/ca-certificates.crt",
+        "/etc/pki/tls/certs/ca-bundle.crt",
+        "/etc/ssl/cert.pem",
+        "/etc/ssl/ca-bundle.pem",
+    ):
+        if Path(candidate).is_file():
+            os.environ["SSL_CERT_FILE"] = candidate
+            return
+
+
 def _launched_as_cli():
     """Return True when invoked via a zardit-cli binary or symlink."""
 
@@ -44,6 +75,7 @@ def _launched_as_cli():
 
 def main(argv=None):
     configure_bundled_tools_path()
+    configure_ssl_certificates()
     args = list(sys.argv[1:] if argv is None else argv)
 
     if _launched_as_cli() or "--cli" in args or "--diagnostics" in args:

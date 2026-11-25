@@ -26,6 +26,7 @@ a = Analysis(
         "updater",
         "yt_dlp",
         "rich",
+        "certifi",
     ],
     hookspath=[],
     hooksconfig={},
