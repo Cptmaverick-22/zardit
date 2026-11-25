@@ -1072,7 +1072,7 @@ class MainWindow(QWidget):
         self.about_button = QPushButton("About")
         self.about_button.setObjectName("secondaryBtn")
         self.about_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.about_button.setToolTip(f"Version and {APP_LICENSE} License")
+        self.about_button.setToolTip(f"Version and {APP_LICENSE} license")
         self.about_button.clicked.connect(self.show_about)
 
         controls_row.addWidget(nav_frame)

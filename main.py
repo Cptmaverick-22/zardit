@@ -603,7 +603,7 @@ def show_menu():
     meta.add_row("Tagline", f"[muted]{escape(APP_TAGLINE)}[/]")
     meta.add_row("Save to", f"[heading]{escape(truncate_middle(download_dir, path_limit))}[/]")
     meta.add_row("Theme", f"[accent.bold]{escape(theme_summary())}[/]")
-    meta.add_row("License", f"[muted]{escape(APP_LICENSE)} License[/]")
+    meta.add_row("License", f"[muted]{escape(APP_LICENSE)}[/]")
     if not compact:
         meta.add_row("Sites", "[muted]YouTube · Instagram · Facebook · Reddit · X · Threads[/]")
 

@@ -805,10 +805,9 @@ class LauncherAndPackagingTests(unittest.TestCase):
         self.assertFalse(icon.isNull())
 
     def test_license_metadata_and_about_dialog(self):
-        self.assertEqual(config.APP_LICENSE, "MIT")
+        self.assertEqual(config.APP_LICENSE, "GPL-3.0-or-later")
         license_text = gui.read_license_text()
-        self.assertIn("MIT License", license_text)
-        self.assertIn("Cptmaverick-22", license_text)
+        self.assertIn("GNU GENERAL PUBLIC LICENSE", license_text)
 
         dlg = gui.AboutDialog()
         self.addCleanup(dlg.close)
@@ -817,7 +816,7 @@ class LauncherAndPackagingTests(unittest.TestCase):
         test_console, buffer = TerminalUiTests()._capture_console(90, "dark")
         with mock.patch.object(main, "console", test_console):
             main.show_menu()
-        self.assertIn("MIT License", buffer.getvalue())
+        self.assertIn("GPL-3.0-or-later", buffer.getvalue())
 
     def test_configure_bundled_tools_path_for_frozen_builds(self):
         with tempfile.TemporaryDirectory() as tmp:

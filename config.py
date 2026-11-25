@@ -16,7 +16,7 @@ APP_NAME = "Zardit"
 APP_SLUG = "zardit"
 APP_TAGLINE = "Blaze through videos, audio & playlists across every platform."
 APP_VERSION = "1.2"   # The only place the version is set.
-APP_LICENSE = "MIT"
+APP_LICENSE = "GPL-3.0-or-later"
 
 AUDIO_BITRATES = [128, 192, 256, 320]
 ORIGINAL_AUDIO = "original"     # Source audio saved as it is, no conversion
