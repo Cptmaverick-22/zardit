@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.cptmaverick_22.zardit</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>LicenseRef-proprietary</project_license>
+  <name>Zardit</name>
+  <summary>Blaze through videos, audio &amp; playlists across every platform</summary>
+  <description>
+    <p>
+      Zardit is a desktop and terminal media downloader powered by yt-dlp, FFmpeg, and Deno.
+      Download MP4 videos, MP3 or original audio with embedded cover art, images, and multi-item
+      playlists or galleries from YouTube, Instagram, Facebook, Reddit, X (Twitter), Threads, and more.
+    </p>
+  </description>
+  <launchable type="desktop-id">zardit.desktop</launchable>
+  <url type="homepage">https://github.com/Cptmaverick-22/zardit</url>
+  <url type="bugtracker">https://github.com/Cptmaverick-22/zardit/issues</url>
+  <developer id="io.github.cptmaverick_22">
+    <name>Cptmaverick-22</name>
+  </developer>
+  <categories>
+    <category>AudioVideo</category>
+    <category>Audio</category>
+    <category>Video</category>
+  </categories>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="1.2" date="2026-11-25" />
+  </releases>
+</component>
