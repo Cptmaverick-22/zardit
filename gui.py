@@ -359,7 +359,12 @@ def resource_path(relative):
 def load_app_icon():
     """Return the Zardit QIcon if bundled assets are available."""
 
-    for candidate in ("assets/zardit.png", "assets/zardit.svg"):
+    candidates = (
+        ("assets/zardit.ico", "assets/zardit.png", "assets/zardit.svg")
+        if sys.platform == "win32"
+        else ("assets/zardit.png", "assets/zardit.svg", "assets/zardit.ico")
+    )
+    for candidate in candidates:
         path = resource_path(candidate)
         if path.is_file():
             return QIcon(str(path))
@@ -3072,8 +3077,24 @@ class MainWindow(QWidget):
         event.accept()
 
 
+def _set_windows_app_id():
+    """Give Zardit its own Windows taskbar identity and icon."""
+
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            f"Cptmaverick22.{APP_NAME}.{APP_VERSION}"
+        )
+    except (AttributeError, OSError):
+        pass
+
+
 def main():
     setup_logging()
+    _set_windows_app_id()
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     app.setApplicationName(APP_NAME)

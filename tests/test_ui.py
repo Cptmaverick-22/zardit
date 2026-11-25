@@ -797,17 +797,44 @@ class LauncherAndPackagingTests(unittest.TestCase):
     def test_resource_path_and_app_icon_load(self):
         svg_path = gui.resource_path("assets/zardit.svg")
         png_path = gui.resource_path("assets/zardit.png")
+        ico_path = gui.resource_path("assets/zardit.ico")
         self.assertTrue(svg_path.is_file())
         self.assertTrue(png_path.is_file())
+        self.assertTrue(ico_path.is_file())
         icon = gui.load_app_icon()
         self.assertFalse(icon.isNull())
 
+    def test_configure_bundled_tools_path_for_frozen_builds(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            exe_dir = root / "app"
+            bin_dir = exe_dir / "bin"
+            bin_dir.mkdir(parents=True)
+            exe_path = exe_dir / "Zardit.exe"
+            exe_path.write_bytes(b"")
+
+            with mock.patch.object(sys, "frozen", True, create=True), \
+                    mock.patch.object(sys, "executable", str(exe_path)), \
+                    mock.patch.dict(os.environ, {"PATH": "/usr/bin"}, clear=False):
+                zardit_app.configure_bundled_tools_path()
+                parts = os.environ["PATH"].split(os.pathsep)
+                self.assertEqual(parts[0], str(exe_dir.resolve()))
+                self.assertEqual(parts[1], str(bin_dir.resolve()))
+
     def test_zardit_app_routes_gui_and_cli(self):
         with mock.patch("gui.main", return_value=0) as gui_main, \
-                mock.patch("main.run", return_value=0) as cli_run:
+                mock.patch("main.run", return_value=0) as cli_run, \
+                mock.patch.object(sys, "argv", ["Zardit.exe"]):
             self.assertEqual(zardit_app.main([]), 0)
             gui_main.assert_called_once_with()
             cli_run.assert_not_called()
+
+        with mock.patch("gui.main", return_value=0) as gui_main, \
+                mock.patch("main.run", return_value=0) as cli_run, \
+                mock.patch.object(sys, "argv", ["zardit-cli.exe"]):
+            self.assertEqual(zardit_app.main([]), 0)
+            gui_main.assert_not_called()
+            cli_run.assert_called_once_with()
 
         with mock.patch("gui.main", return_value=0) as gui_main, \
                 mock.patch("main.run", return_value=0) as cli_run, \

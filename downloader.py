@@ -2278,6 +2278,7 @@ def download_image(
             temp_path.replace(final_path)
         else:
             reporter.stage(f"Converting to {target_ext.upper()}...")
+            options = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
             proc = subprocess.run(
                 [
                     "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
@@ -2285,6 +2286,7 @@ def download_image(
                 ],
                 capture_output=True,
                 text=True,
+                **options,
             )
             try:
                 temp_path.unlink()

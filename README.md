@@ -166,7 +166,16 @@ pip install -r requirements.txt
 python gui.py
 ```
 
-### Windows
+### Windows (Installer & Portable ZIP — Recommended)
+
+Download either Windows package from **GitHub Releases**:
+
+- **Installer**: `Zardit-<version>-win64-setup.exe` — installs Zardit, Start Menu/Desktop shortcuts, and optional `zardit-cli` terminal access (no admin required).
+- **Portable**: `Zardit-<version>-win64-portable.zip` — extract anywhere and run `Zardit.exe` (or `zardit-cli.exe` in **Windows Terminal**).
+
+Both bundles include Python, PySide6, yt-dlp, **FFmpeg**, and **Deno**.
+
+### Windows (from source)
 
 Use **Windows Terminal** (the default on Windows 11). The old `cmd.exe` window can show garbled symbols in the terminal app.
 
@@ -474,9 +483,10 @@ zardit/
 ├── history.py             # Persistent download history
 ├── logs.py                # Log file and diagnostics report
 ├── desktop.py             # Notifications and opening folders
-├── assets/                # Zardit SVG/PNG application icons
-├── packaging/linux/       # AppImage build script, AppRun, .desktop, local installer
-├── .github/workflows/     # GitHub Actions CI and tag-triggered AppImage releases
+├── assets/                # Zardit SVG/PNG/ICO application icons
+├── packaging/linux/       # AppImage build script, AppRun, .desktop, AppStream, installer
+├── packaging/windows/     # Windows PyInstaller spec, PowerShell build script, Inno Setup
+├── .github/workflows/     # GitHub Actions CI and tag-triggered Linux + Windows releases
 ├── requirements.txt
 ├── requirements-dev.txt
 ├── README.md
@@ -502,6 +512,15 @@ pip install pyinstaller
 
 Or pass `--use-system-tools` to reuse system `ffmpeg` and `deno` during local builds. Tagging a release (`git tag v1.2 && git push origin v1.2`) triggers `.github/workflows/release-appimage.yml` to build and publish `Zardit-<version>-x86_64.AppImage` and `SHA256SUMS.txt` on GitHub Releases.
 
+**Build the Windows installer / portable ZIP locally**
+
+```powershell
+pip install pyinstaller
+powershell -ExecutionPolicy Bypass -File packaging\windows\build_windows.ps1
+```
+
+Tagging a release also triggers `.github/workflows/release-windows.yml` on `windows-latest` to publish `Zardit-<version>-win64-setup.exe`, `Zardit-<version>-win64-portable.zip`, and `SHA256SUMS-windows.txt`.
+
 **Run the checks**
 
 ```bash
@@ -522,7 +541,7 @@ Respect copyright laws, YouTube's Terms of Service and the rights of content cre
 
 Ideas, not promises:
 
-- Ready-to-run Windows installer alongside the Linux AppImage
+- Android APK companion app with Share-sheet support
 - Faster playlists by preparing the next video while one downloads
 - Subtitles, and downloading a clip by start and end time
 - An option for WebM or MKV to offer more formats above 1080p
