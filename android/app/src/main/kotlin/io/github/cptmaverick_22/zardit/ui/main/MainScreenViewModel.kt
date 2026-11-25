@@ -152,7 +152,8 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
             return
         }
         app.initResult.value?.onFailure { err ->
-            _uiState.update { it.copy(fetchError = "Engine init failed: ${err.message}") }
+            val detail = err.message ?: err::class.java.simpleName
+            _uiState.update { it.copy(fetchError = "Engine init failed: $detail") }
             return
         }
 
