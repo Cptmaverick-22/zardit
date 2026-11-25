@@ -30,12 +30,12 @@ jobs:
       - name: Setup Gradle cache
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build Debug APK
+      - name: Build slim arm64-v8a APK
         working-directory: android
-        run: ./gradlew assembleDebug --no-daemon
+        run: ./gradlew assembleRelease --no-daemon
 
-      - name: Upload Debug APK artifact
+      - name: Upload Android APK artifact
         uses: actions/upload-artifact@v6
         with:
-          name: zardit-android-debug
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: zardit-android-arm64
+          path: android/app/build/outputs/apk/release/app-arm64-v8a-release.apk
