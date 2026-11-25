@@ -10,7 +10,7 @@ on:
       - "packaging/linux/**"
       - "tests/**"
       - ".github/workflows/ci-linux.yml"
-      - ".github/workflows/release-appimage.yml"
+      - ".github/workflows/release.yml"
   pull_request:
     branches: [main]
     paths:
@@ -20,7 +20,7 @@ on:
       - "packaging/linux/**"
       - "tests/**"
       - ".github/workflows/ci-linux.yml"
-      - ".github/workflows/release-appimage.yml"
+      - ".github/workflows/release.yml"
 
 jobs:
   test-linux:

@@ -1,0 +1,135 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      build_linux:
+        description: "Build Linux x86_64 AppImage"
+        type: boolean
+        default: true
+      build_windows:
+        description: "Build Windows x64 installer and portable ZIP"
+        type: boolean
+        default: true
+      release_tag:
+        description: "Optional existing release tag (e.g. v1.2) to attach assets to"
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.build_linux == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install system build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            desktop-file-utils \
+            file \
+            libfuse2 \
+            libegl1 \
+            libgl1 \
+            libxkbcommon0 \
+            libdbus-1-3 \
+            patchelf \
+            unzip
+
+      - name: Install Python build and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Run unit tests before packaging
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m unittest discover -s tests -q
+
+      - name: Build portable AppImage
+        run: |
+          chmod +x packaging/linux/AppRun packaging/linux/build_appimage.sh packaging/linux/install_local.sh
+          ./packaging/linux/build_appimage.sh
+
+      - name: Upload Linux release artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: zardit-linux-x86_64-appimage
+          path: dist/Zardit-*-x86_64.AppImage
+
+  build-windows:
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.build_windows == 'true'
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install Python build and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Run unit tests before packaging
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m unittest discover -s tests -q
+
+      - name: Build Windows portable ZIP and installer
+        shell: pwsh
+        run: ./packaging/windows/build_windows.ps1
+
+      - name: Upload Windows release artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: zardit-windows-x64
+          path: |
+            dist/Zardit-*-win64-*.zip
+            dist/Zardit-*-win64-*.exe
+
+  publish-release:
+    needs: [build-linux, build-windows]
+    if: |
+      !failure() && !cancelled() &&
+      (startsWith(github.ref, 'refs/tags/v') || github.event.inputs.release_tag != '')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Generate unified SHA256SUMS.txt
+        run: |
+          cd release-assets
+          sha256sum Zardit-* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.event.inputs.release_tag != '' && github.event.inputs.release_tag || github.ref_name }}
+          files: release-assets/*
+          generate_release_notes: true

@@ -73,6 +73,8 @@ if ($UseSystemTools) {
     Copy-Item -Force $DenoCache (Join-Path $DistApp "deno.exe")
 }
 
+Copy-Item -Force (Join-Path $RootDir "LICENSE") (Join-Path $DistApp "LICENSE")
+
 Write-Host "==> Smoke testing bundled CLI diagnostics..."
 $CliExe = Join-Path $DistApp "zardit-cli.exe"
 & $CliExe --diagnostics

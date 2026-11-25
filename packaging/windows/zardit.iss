@@ -21,6 +21,7 @@ OutputDir=..\..\dist
 OutputBaseFilename=Zardit-{#MyAppVersion}-win64-setup
 SetupIconFile=..\..\assets\zardit.ico
 UninstallDisplayIcon={app}\Zardit.exe
+LicenseFile=..\..\LICENSE
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -37,6 +38,7 @@ Name: "addtopath"; Description: "Add Zardit CLI folder to your user PATH (for za
 
 [Files]
 Source: "..\..\dist\Zardit\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\Zardit"; Filename: "{app}\Zardit.exe"; Comment: "Blaze through videos, audio & playlists across every platform"

@@ -804,6 +804,21 @@ class LauncherAndPackagingTests(unittest.TestCase):
         icon = gui.load_app_icon()
         self.assertFalse(icon.isNull())
 
+    def test_license_metadata_and_about_dialog(self):
+        self.assertEqual(config.APP_LICENSE, "MIT")
+        license_text = gui.read_license_text()
+        self.assertIn("MIT License", license_text)
+        self.assertIn("Cptmaverick-22", license_text)
+
+        dlg = gui.AboutDialog()
+        self.addCleanup(dlg.close)
+        self.assertEqual(dlg.windowTitle(), f"About {config.APP_NAME}")
+
+        test_console, buffer = TerminalUiTests()._capture_console(90, "dark")
+        with mock.patch.object(main, "console", test_console):
+            main.show_menu()
+        self.assertIn("MIT License", buffer.getvalue())
+
     def test_configure_bundled_tools_path_for_frozen_builds(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

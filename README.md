@@ -10,6 +10,7 @@
 [![Linux CI](https://img.shields.io/github/actions/workflow/status/Cptmaverick-22/zardit/ci-linux.yml?branch=main&label=Linux%20CI&style=for-the-badge)](https://github.com/Cptmaverick-22/zardit/actions/workflows/ci-linux.yml)
 [![Windows CI](https://img.shields.io/github/actions/workflow/status/Cptmaverick-22/zardit/ci-windows.yml?branch=main&label=Windows%20CI&style=for-the-badge)](https://github.com/Cptmaverick-22/zardit/actions/workflows/ci-windows.yml)
 [![Python](https://img.shields.io/badge/Python-3.11%E2%80%933.15-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
 
 Download **MP4 videos**, **MP3 / original audio** with embedded cover art, **images** (Original, PNG, JPG, WebP), and **multi-item playlists & galleries** from **YouTube, Instagram, Facebook, Reddit, X (Twitter), Threads**, and more — via a modern Qt desktop app or a Rich terminal interface.
 
@@ -351,4 +352,4 @@ This software is intended only for downloading content that you own, have permis
 
 ## License
 
-No license has been specified yet. All rights reserved by the project author unless a license is added.
+Licensed under the [MIT License](LICENSE). Copyright © 2026 Cptmaverick-22.

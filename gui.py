@@ -56,6 +56,7 @@ updater.activate()   # Must run before anything imports yt-dlp.
 from updater import UpdateError
 
 from config import (
+    APP_LICENSE,
     APP_NAME,
     APP_SLUG,
     APP_TAGLINE,
@@ -760,6 +761,82 @@ class MediaPreviewDialog(QDialog):
             self._render_current()
 
 
+def read_license_text():
+    """Return the bundled MIT License text, or a concise fallback."""
+
+    license_path = resource_path("LICENSE")
+    if license_path.is_file():
+        try:
+            return license_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            pass
+    return (
+        f"{APP_NAME} v{APP_VERSION} is licensed under the {APP_LICENSE} License.\n"
+        "Copyright (c) 2026 Cptmaverick-22."
+    )
+
+
+class AboutDialog(QDialog):
+    """Displays version, third-party tools, and license text."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"About {APP_NAME}")
+        self.resize(520, 440)
+        icon = load_app_icon()
+        if not icon.isNull():
+            self.setWindowIcon(icon)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(12)
+
+        header = QHBoxLayout()
+        header.setSpacing(12)
+
+        if not icon.isNull():
+            icon_lbl = QLabel()
+            icon_lbl.setPixmap(icon.pixmap(48, 48))
+            header.addWidget(icon_lbl, 0, Qt.AlignmentFlag.AlignTop)
+
+        title_col = QVBoxLayout()
+        title_col.setSpacing(2)
+        title_lbl = QLabel(f"{APP_NAME} v{APP_VERSION}")
+        title_lbl.setObjectName("appTitle")
+        tag_lbl = QLabel(APP_TAGLINE)
+        tag_lbl.setObjectName("mutedText")
+        tag_lbl.setWordWrap(True)
+        lic_lbl = QLabel(f"License: {APP_LICENSE}  ·  Built with yt-dlp, FFmpeg, Deno, PySide6 & Rich")
+        lic_lbl.setObjectName("mutedText")
+        lic_lbl.setWordWrap(True)
+        title_col.addWidget(title_lbl)
+        title_col.addWidget(tag_lbl)
+        title_col.addWidget(lic_lbl)
+        header.addLayout(title_col, 1)
+        layout.addLayout(header)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setObjectName("card")
+        license_label = QLabel(read_license_text())
+        license_label.setTextFormat(Qt.TextFormat.PlainText)
+        license_label.setWordWrap(True)
+        license_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        license_label.setContentsMargins(12, 12, 12, 12)
+        scroll.setWidget(license_label)
+        layout.addWidget(scroll, 1)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        close_btn = QPushButton("Close")
+        close_btn.setObjectName("primaryBtn")
+        close_btn.clicked.connect(self.accept)
+        buttons.addWidget(close_btn)
+        layout.addLayout(buttons)
+
+
 # --------------------------------------------------------------------------
 # Main window
 # --------------------------------------------------------------------------
@@ -992,9 +1069,16 @@ class MainWindow(QWidget):
         )
         self.update_button.clicked.connect(self.update_ytdlp)
 
+        self.about_button = QPushButton("About")
+        self.about_button.setObjectName("secondaryBtn")
+        self.about_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.about_button.setToolTip(f"Version and {APP_LICENSE} License")
+        self.about_button.clicked.connect(self.show_about)
+
         controls_row.addWidget(nav_frame)
         controls_row.addWidget(theme_frame)
         controls_row.addWidget(self.update_button)
+        controls_row.addWidget(self.about_button)
         controls_row.addStretch(1)
 
         self.header_controls_container = QWidget()
@@ -3023,6 +3107,10 @@ class MainWindow(QWidget):
 
         if answer == QMessageBox.StandardButton.Yes:
             self.restart_app()
+
+    def show_about(self):
+        dialog = AboutDialog(self)
+        dialog.exec()
 
     def restart_app(self):
         if updater.restart():

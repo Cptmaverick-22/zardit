@@ -14,6 +14,7 @@ a = Analysis(
         (ICON_PATH, "assets"),
         (str(ROOT / "assets" / "zardit.png"), "assets"),
         (str(ROOT / "assets" / "zardit.svg"), "assets"),
+        (str(ROOT / "LICENSE"), "."),
     ],
     hiddenimports=[
         "gui",

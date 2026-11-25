@@ -10,7 +10,7 @@ on:
       - "packaging/windows/**"
       - "tests/**"
       - ".github/workflows/ci-windows.yml"
-      - ".github/workflows/release-windows.yml"
+      - ".github/workflows/release.yml"
   pull_request:
     branches: [main]
     paths:
@@ -20,7 +20,7 @@ on:
       - "packaging/windows/**"
       - "tests/**"
       - ".github/workflows/ci-windows.yml"
-      - ".github/workflows/release-windows.yml"
+      - ".github/workflows/release.yml"
 
 jobs:
   test-windows:
