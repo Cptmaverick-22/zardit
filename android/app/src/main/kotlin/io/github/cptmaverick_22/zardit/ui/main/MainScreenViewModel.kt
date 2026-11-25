@@ -69,7 +69,6 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
             DownloadService.state.collect { state ->
                 if (state is DownloadState.Completed) {
                     refreshHistory()
-                    checkDuplicateSelection()
                 }
             }
         }
@@ -96,6 +95,7 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
         runCatching { app.contentResolver.takePersistableUriPermission(uri, flags) }
         prefs.setTreeUri(uri)
+        DownloadService.resetState()
         _uiState.update {
             it.copy(
                 folderDisplayName = prefs.getFolderDisplayName(),
@@ -107,6 +107,7 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
 
     fun resetFolder() {
         prefs.setTreeUri(null)
+        DownloadService.resetState()
         _uiState.update {
             it.copy(
                 folderDisplayName = "Downloads/Zardit",
@@ -117,16 +118,19 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun onDownloadModeSelected(mode: DownloadMode) {
+        DownloadService.resetState()
         _uiState.update { it.copy(downloadMode = mode) }
         checkDuplicateSelection()
     }
 
     fun onVideoHeightSelected(height: Int) {
+        DownloadService.resetState()
         _uiState.update { it.copy(selectedVideoHeight = height) }
         checkDuplicateSelection()
     }
 
     fun onAudioOptionSelected(option: AudioOption) {
+        DownloadService.resetState()
         _uiState.update { it.copy(selectedAudioId = option.id) }
         checkDuplicateSelection()
     }
@@ -210,12 +214,14 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         val current = _uiState.value
         val preview = current.preview ?: return
         if (current.existingDownloadPath != null) return
+        val basePlatform = preview.platform.substringBefore(" · ")
+        val mediaKind = if (current.downloadMode == DownloadMode.AUDIO) "AUDIO" else "VIDEO"
         DownloadService.start(
             context = app,
             url = preview.url,
             mediaId = preview.mediaId,
             title = preview.title,
-            platform = preview.platform,
+            platform = "$basePlatform · $mediaKind",
             mode = current.downloadMode,
             videoHeight = current.selectedVideoHeight,
             audioId = current.selectedAudioId,

@@ -28,13 +28,16 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Audiotrack
+import androidx.compose.material.icons.rounded.BrightnessAuto
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ContentPaste
+import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.History
+import androidx.compose.material.icons.rounded.LightMode
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Share
@@ -53,8 +56,6 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -63,6 +64,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -85,6 +87,7 @@ fun MainScreen(
     val ui by viewModel.uiState.collectAsState()
     val downloadState by viewModel.downloadState.collectAsState()
     val initResult by viewModel.engineInitResult.collectAsState()
+    @Suppress("DEPRECATION")
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
 
@@ -114,26 +117,40 @@ fun MainScreen(
         viewModel.startDownload()
     }
 
+    fun cycleTheme() {
+        val entries = ThemeMode.entries
+        val next = entries[(entries.indexOf(ui.themeMode) + 1) % entries.size]
+        viewModel.onThemeModeSelected(next)
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .safeDrawingPadding()
-            .padding(horizontal = 16.dp, vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        // Header (single-line Update yt-dlp button, never wraps)
+        // Compact Header: Zardit + Theme pill + Update yt-dlp pill
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "Zardit",
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Text(
+                        text = "Zardit",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                    )
+                    if (initResult == null) {
+                        CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                    }
+                }
                 Text(
                     text = "Media Downloader",
                     style = MaterialTheme.typography.bodySmall,
@@ -143,21 +160,46 @@ fun MainScreen(
                 )
             }
 
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                color = MaterialTheme.colorScheme.surface,
+                modifier = Modifier.clickable { cycleTheme() },
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    val themeIcon = when (ui.themeMode) {
+                        ThemeMode.AUTO -> Icons.Rounded.BrightnessAuto
+                        ThemeMode.LIGHT -> Icons.Rounded.LightMode
+                        ThemeMode.DARK -> Icons.Rounded.DarkMode
+                    }
+                    Icon(themeIcon, contentDescription = "Theme", modifier = Modifier.size(16.dp))
+                    Text(
+                        text = ui.themeMode.label,
+                        style = MaterialTheme.typography.labelMedium,
+                        maxLines = 1,
+                        softWrap = false,
+                    )
+                }
+            }
+
             OutlinedButton(
                 onClick = { viewModel.updateYtDlp() },
                 enabled = !ui.isUpdatingYtDlp,
                 shape = RoundedCornerShape(10.dp),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
             ) {
                 if (ui.isUpdatingYtDlp) {
                     CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
-                    Spacer(Modifier.width(6.dp))
                 } else {
                     Icon(Icons.Rounded.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(6.dp))
                 }
+                Spacer(Modifier.width(5.dp))
                 Text(
-                    text = "Update yt-dlp",
+                    text = "yt-dlp",
                     style = MaterialTheme.typography.labelMedium,
                     maxLines = 1,
                     softWrap = false,
@@ -165,46 +207,54 @@ fun MainScreen(
             }
         }
 
-        // Theme selector row
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
+        // Sleek Segmented Switcher: Downloader | History
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            shape = RoundedCornerShape(12.dp),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+            modifier = Modifier.fillMaxWidth(),
         ) {
-            ThemeMode.entries.forEach { mode ->
-                FilterChip(
-                    selected = ui.themeMode == mode,
-                    onClick = { viewModel.onThemeModeSelected(mode) },
-                    label = { Text(mode.label) },
-                )
-            }
-            if (initResult == null) {
-                Spacer(Modifier.weight(1f))
-                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-            }
-        }
-
-        // Tabs: Downloader | History
-        TabRow(selectedTabIndex = ui.activeTab.ordinal) {
-            AppTab.entries.forEach { tab ->
-                Tab(
-                    selected = ui.activeTab == tab,
-                    onClick = { viewModel.onTabSelected(tab) },
-                    text = {
-                        val label = if (tab == AppTab.HISTORY && ui.history.isNotEmpty()) {
-                            "${tab.label} (${ui.history.size})"
-                        } else {
-                            tab.label
+            Row(
+                modifier = Modifier.padding(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                AppTab.entries.forEach { tab ->
+                    val selected = ui.activeTab == tab
+                    val label = if (tab == AppTab.HISTORY && ui.history.isNotEmpty()) {
+                        "${tab.label} (${ui.history.size})"
+                    } else {
+                        tab.label
+                    }
+                    Surface(
+                        color = if (selected) MaterialTheme.colorScheme.primary else Color.Transparent,
+                        shape = RoundedCornerShape(9.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(9.dp))
+                            .clickable { viewModel.onTabSelected(tab) },
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(vertical = 9.dp, horizontal = 12.dp),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                imageVector = if (tab == AppTab.DOWNLOADER) Icons.Rounded.Download else Icons.Rounded.History,
+                                contentDescription = null,
+                                tint = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(17.dp),
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                text = label,
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                                color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                            )
                         }
-                        Text(label, maxLines = 1)
-                    },
-                    icon = {
-                        Icon(
-                            imageVector = if (tab == AppTab.DOWNLOADER) Icons.Rounded.Download else Icons.Rounded.History,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp),
-                        )
-                    },
-                )
+                    }
+                }
             }
         }
 
@@ -433,6 +483,7 @@ fun MainScreen(
 
                 // Save folder + Download / Progress Card
                 val isRunning = downloadState is DownloadState.Running
+                val isJustCompleted = downloadState is DownloadState.Completed
                 Card(
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
@@ -477,24 +528,27 @@ fun MainScreen(
                             }
                         }
 
-                        ui.existingDownloadPath?.let { existing ->
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            ) {
-                                Icon(
-                                    Icons.Rounded.CheckCircle,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(16.dp),
-                                )
-                                Text(
-                                    text = "Already saved: $existing",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
+                        // Only show "Already saved" when Idle (switching back to an existing quality)
+                        if (!isJustCompleted && !isRunning) {
+                            ui.existingDownloadPath?.let { existing ->
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                ) {
+                                    Icon(
+                                        Icons.Rounded.CheckCircle,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(16.dp),
+                                    )
+                                    Text(
+                                        text = "Already saved: $existing",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
                             }
                         }
 
@@ -553,7 +607,7 @@ fun MainScreen(
                             DownloadState.Idle -> Unit
                         }
 
-                        if (!isRunning && ui.preview != null) {
+                        if (!isRunning && ui.preview != null && !isJustCompleted) {
                             val alreadyDownloaded = ui.existingDownloadPath != null
                             Button(
                                 onClick = { triggerDownload() },
@@ -648,8 +702,14 @@ private fun HistoryTab(
 
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.End,
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
+            Text(
+                text = "${items.size} saved item${if (items.size == 1) "" else "s"}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             TextButton(onClick = onClearAll) {
                 Text("Clear history")
             }
@@ -666,12 +726,23 @@ private fun HistoryTab(
                     modifier = Modifier.padding(12.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    Text(
-                        text = "${item.platform} · ${item.qualityLabel}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary,
-                        fontWeight = FontWeight.SemiBold,
-                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.primaryContainer,
+                            shape = RoundedCornerShape(6.dp),
+                        ) {
+                            Text(
+                                text = "${item.platform} · ${item.qualityLabel}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+                            )
+                        }
+                    }
                     Text(
                         text = item.title,
                         style = MaterialTheme.typography.titleSmall,
@@ -686,17 +757,26 @@ private fun HistoryTab(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
                         if (item.contentUri != null) {
-                            TextButton(onClick = { onOpen(item) }) {
+                            OutlinedButton(
+                                onClick = { onOpen(item) },
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                            ) {
                                 Icon(Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
                                 Spacer(Modifier.width(4.dp))
-                                Text("Open")
+                                Text("Open", style = MaterialTheme.typography.labelMedium)
                             }
-                            TextButton(onClick = { onShare(item) }) {
-                                Icon(Icons.Rounded.Share, contentDescription = null, modifier = Modifier.size(16.dp))
+                            OutlinedButton(
+                                onClick = { onShare(item) },
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                            ) {
+                                Icon(Icons.Rounded.Share, contentDescription = null, modifier = Modifier.size(15.dp))
                                 Spacer(Modifier.width(4.dp))
-                                Text("Share")
+                                Text("Share", style = MaterialTheme.typography.labelMedium)
                             }
                         }
                         Spacer(Modifier.weight(1f))
