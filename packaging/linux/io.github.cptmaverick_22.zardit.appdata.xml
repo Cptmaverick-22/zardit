@@ -12,7 +12,7 @@
       playlists or galleries from YouTube, Instagram, Facebook, Reddit, X (Twitter), Threads, and more.
     </p>
   </description>
-  <launchable type="desktop-id">zardit.desktop</launchable>
+  <launchable type="desktop-id">io.github.cptmaverick_22.zardit.desktop</launchable>
   <url type="homepage">https://github.com/Cptmaverick-22/zardit</url>
   <url type="bugtracker">https://github.com/Cptmaverick-22/zardit/issues</url>
   <developer id="io.github.cptmaverick_22">

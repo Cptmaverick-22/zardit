@@ -46,13 +46,15 @@ mkdir -p \
     "$APPDIR/usr/share/icons/hicolor/256x256/apps" \
     "$APPDIR/usr/share/icons/hicolor/scalable/apps"
 
+APP_ID="io.github.cptmaverick_22.zardit"
+
 cp -a "$ROOT_DIR/dist/zardit/." "$APPDIR/usr/lib/zardit/"
 cp "$ROOT_DIR/packaging/linux/AppRun" "$APPDIR/AppRun"
 chmod +x "$APPDIR/AppRun"
 
-cp "$ROOT_DIR/packaging/linux/zardit.desktop" "$APPDIR/zardit.desktop"
-cp "$ROOT_DIR/packaging/linux/zardit.desktop" "$APPDIR/usr/share/applications/zardit.desktop"
-cp "$ROOT_DIR/packaging/linux/zardit.appdata.xml" "$APPDIR/usr/share/metainfo/zardit.appdata.xml"
+cp "$ROOT_DIR/packaging/linux/zardit.desktop" "$APPDIR/${APP_ID}.desktop"
+cp "$ROOT_DIR/packaging/linux/zardit.desktop" "$APPDIR/usr/share/applications/${APP_ID}.desktop"
+cp "$ROOT_DIR/packaging/linux/${APP_ID}.appdata.xml" "$APPDIR/usr/share/metainfo/${APP_ID}.appdata.xml"
 cp "$ROOT_DIR/assets/zardit.png" "$APPDIR/zardit.png"
 cp "$ROOT_DIR/assets/zardit.png" "$APPDIR/.DirIcon"
 cp "$ROOT_DIR/assets/zardit.png" "$APPDIR/usr/share/icons/hicolor/256x256/apps/zardit.png"
