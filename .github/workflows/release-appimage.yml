@@ -53,7 +53,7 @@ jobs:
 
       - name: Generate SHA256 checksum
         run: |
-          sha256sum Zardit-*-x86_64.AppImage > SHA256SUMS.txt
+          (cd dist && sha256sum Zardit-*-x86_64.AppImage > ../SHA256SUMS.txt)
           cat SHA256SUMS.txt
 
       - name: Upload AppImage artifact
@@ -61,7 +61,7 @@ jobs:
         with:
           name: zardit-linux-x86_64-appimage
           path: |
-            Zardit-*-x86_64.AppImage
+            dist/Zardit-*-x86_64.AppImage
             SHA256SUMS.txt
 
       - name: Publish GitHub Release
@@ -69,6 +69,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            Zardit-*-x86_64.AppImage
+            dist/Zardit-*-x86_64.AppImage
             SHA256SUMS.txt
           generate_release_notes: true
