@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1A1F2E"/>
+      <stop offset="100%" stop-color="#0B0E17"/>
+    </linearGradient>
+    <linearGradient id="flameGrad" x1="20%" y1="100%" x2="80%" y2="0%">
+      <stop offset="0%" stop-color="#DC2626"/>
+      <stop offset="52%" stop-color="#F97316"/>
+      <stop offset="100%" stop-color="#FACC15"/>
+    </linearGradient>
+    <linearGradient id="innerFlame" x1="50%" y1="100%" x2="50%" y2="0%">
+      <stop offset="0%" stop-color="#EA580C"/>
+      <stop offset="100%" stop-color="#FEF08A"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Rounded app tile -->
+  <rect x="12" y="12" width="232" height="232" rx="54" fill="url(#bgGrad)" stroke="#2A3244" stroke-width="4"/>
+
+  <!-- Outer stylized Charizard-inspired flame -->
+  <path d="M132 34
+           C142 62, 174 74, 182 110
+           C188 96, 198 90, 200 108
+           C205 154, 178 206, 128 214
+           C76 206, 52 162, 58 118
+           C61 98, 76 88, 82 106
+           C86 74, 114 54, 132 34 Z"
+        fill="url(#flameGrad)"/>
+
+  <!-- Inner ember glow -->
+  <path d="M128 78
+           C144 98, 162 116, 162 146
+           C162 178, 146 196, 128 200
+           C110 196, 94 178, 94 146
+           C94 118, 112 98, 128 78 Z"
+        fill="url(#innerFlame)" opacity="0.88"/>
+
+  <!-- Play / download arrow emblem -->
+  <path d="M112 122 L158 148 L112 174 Z"
+        fill="#FFFFFF"/>
+</svg>

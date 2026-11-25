@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Zardit
+GenericName=Media Downloader
+Comment=Blaze through videos, audio & playlists across every platform
+Exec=zardit %U
+Icon=zardit
+Terminal=false
+Categories=AudioVideo;Network;Utility;
+Keywords=youtube;instagram;facebook;reddit;twitter;threads;download;video;audio;image;
+StartupNotify=true
+StartupWMClass=zardit
