@@ -63,6 +63,8 @@ data class MediaPreview(
     val imageUrls: List<String> = emptyList(),
     val isPlaylist: Boolean = false,
     val playlistEntries: List<PlaylistEntry> = emptyList(),
+    val directVideoUrl: String? = null,
+    val usedInstagramAuth: Boolean = false,
 )
 
 data class SaveResult(

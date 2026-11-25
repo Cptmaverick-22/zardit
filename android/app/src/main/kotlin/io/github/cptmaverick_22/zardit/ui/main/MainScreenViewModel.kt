@@ -8,6 +8,7 @@ import androidx.lifecycle.viewModelScope
 import io.github.cptmaverick_22.zardit.ZarditApp
 import io.github.cptmaverick_22.zardit.data.HistoryItem
 import io.github.cptmaverick_22.zardit.data.HistoryStore
+import io.github.cptmaverick_22.zardit.data.InstagramAuth
 import io.github.cptmaverick_22.zardit.data.ZarditPrefs
 import io.github.cptmaverick_22.zardit.downloader.AppTab
 import io.github.cptmaverick_22.zardit.downloader.AudioOption
@@ -47,6 +48,7 @@ data class MainUiState(
     val existingDownloadPath: String? = null,
     val isUpdatingYtDlp: Boolean = false,
     val updateBanner: String? = null,
+    val isInstagramConnected: Boolean = false,
     val history: List<HistoryItem> = emptyList(),
 )
 
@@ -65,6 +67,7 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
             themeMode = prefs.getThemeMode(),
             folderDisplayName = prefs.getFolderDisplayName(),
             hasCustomFolder = prefs.getTreeUri() != null,
+            isInstagramConnected = InstagramAuth.hasSession(application),
             history = historyStore.loadAll(),
         ),
     )
@@ -222,7 +225,7 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         }
 
         viewModelScope.launch(Dispatchers.IO) {
-            runCatching { ZarditEngine.fetchPreview(target) }
+            runCatching { ZarditEngine.fetchPreview(app, target) }
                 .onSuccess { preview ->
                     val defaultHeight = preview.videoOptions
                         .firstOrNull { it.height <= 1080 }?.height
@@ -337,7 +340,28 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
             audioId = current.selectedAudioId,
             imageFormat = current.selectedImageFormat,
             imageUrls = preview.imageUrls,
+            directVideoUrl = preview.directVideoUrl,
+            useInstagramCookies = preview.usedInstagramAuth,
         )
+    }
+
+    fun onInstagramConnected() {
+        _uiState.update {
+            it.copy(
+                isInstagramConnected = InstagramAuth.hasSession(app),
+                updateBanner = "Instagram connected locally (AES-GCM encrypted).",
+            )
+        }
+    }
+
+    fun disconnectInstagram() {
+        InstagramAuth.clearSession(app)
+        _uiState.update {
+            it.copy(
+                isInstagramConnected = false,
+                updateBanner = "Instagram session disconnected and wiped.",
+            )
+        }
     }
 
     fun cancelDownload() {
@@ -354,9 +378,17 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    fun removeHistoryItem(id: String) {
-        historyStore.remove(id)
-        refreshHistory()
+    fun removeHistoryItem(item: HistoryItem, deleteFile: Boolean) {
+        if (deleteFile) {
+            viewModelScope.launch(Dispatchers.IO) {
+                ZarditEngine.deleteSavedFile(app, item.contentUri)
+                historyStore.remove(item.id)
+                refreshHistory()
+            }
+        } else {
+            historyStore.remove(item.id)
+            refreshHistory()
+        }
     }
 
     fun clearHistory() {

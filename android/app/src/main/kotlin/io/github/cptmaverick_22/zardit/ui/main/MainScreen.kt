@@ -44,6 +44,7 @@ import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.VideoLibrary
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -64,6 +65,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -94,6 +98,9 @@ fun MainScreen(
     @Suppress("DEPRECATION")
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
+    var showIgLogin by remember { mutableStateOf(false) }
+    var showIgDisconnect by remember { mutableStateOf(false) }
+    var pendingDeleteItem by remember { mutableStateOf<HistoryItem?>(null) }
 
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
@@ -161,6 +168,28 @@ fun MainScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
+                )
+            }
+
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                border = BorderStroke(
+                    1.dp,
+                    if (ui.isInstagramConnected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                ),
+                color = if (ui.isInstagramConnected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
+                modifier = Modifier.clickable {
+                    if (ui.isInstagramConnected) showIgDisconnect = true else showIgLogin = true
+                },
+            ) {
+                Text(
+                    text = if (ui.isInstagramConnected) "IG ✓" else "IG",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (ui.isInstagramConnected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    softWrap = false,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
                 )
             }
 
@@ -797,11 +826,85 @@ fun MainScreen(
                         }
                     }
                 },
-                onRemove = viewModel::removeHistoryItem,
+                onRemove = { item -> pendingDeleteItem = item },
                 onClearAll = viewModel::clearHistory,
                 modifier = Modifier.weight(1f),
             )
         }
+    }
+
+    if (showIgLogin) {
+        InstagramLoginDialog(
+            onConnected = {
+                showIgLogin = false
+                viewModel.onInstagramConnected()
+            },
+            onDismiss = { showIgLogin = false },
+        )
+    }
+
+    if (showIgDisconnect) {
+        AlertDialog(
+            onDismissRequest = { showIgDisconnect = false },
+            title = { Text("Disconnect Instagram?") },
+            text = {
+                Text("This will permanently wipe your locally encrypted Instagram session and cookies from this device.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showIgDisconnect = false
+                        viewModel.disconnectInstagram()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                ) {
+                    Text("Disconnect")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showIgDisconnect = false }) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
+
+    pendingDeleteItem?.let { item ->
+        AlertDialog(
+            onDismissRequest = { pendingDeleteItem = null },
+            title = { Text("Remove download?") },
+            text = {
+                Text("Remove \"${item.title}\" from History only, or also delete the saved file from your phone?")
+            },
+            confirmButton = {
+                if (item.contentUri != null) {
+                    Button(
+                        onClick = {
+                            viewModel.removeHistoryItem(item, deleteFile = true)
+                            pendingDeleteItem = null
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                    ) {
+                        Text("Delete file too")
+                    }
+                }
+            },
+            dismissButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = { pendingDeleteItem = null }) {
+                        Text("Cancel")
+                    }
+                    TextButton(
+                        onClick = {
+                            viewModel.removeHistoryItem(item, deleteFile = false)
+                            pendingDeleteItem = null
+                        },
+                    ) {
+                        Text("History only")
+                    }
+                }
+            },
+        )
     }
 }
 
@@ -810,7 +913,7 @@ private fun HistoryTab(
     items: List<HistoryItem>,
     onOpen: (HistoryItem) -> Unit,
     onShare: (HistoryItem) -> Unit,
-    onRemove: (String) -> Unit,
+    onRemove: (HistoryItem) -> Unit,
     onClearAll: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -910,7 +1013,7 @@ private fun HistoryTab(
                             }
                         }
                         Spacer(Modifier.weight(1f))
-                        IconButton(onClick = { onRemove(item.id) }) {
+                        IconButton(onClick = { onRemove(item) }) {
                             Icon(Icons.Rounded.Delete, contentDescription = "Remove")
                         }
                     }

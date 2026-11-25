@@ -11,6 +11,7 @@ import android.provider.MediaStore
 import androidx.documentfile.provider.DocumentFile
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
+import io.github.cptmaverick_22.zardit.data.InstagramAuth
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
@@ -39,7 +40,7 @@ object ZarditEngine {
             lower.contains("/sets/")
     }
 
-    fun fetchPreview(url: String): MediaPreview {
+    fun fetchPreview(context: Context, url: String): MediaPreview {
         val cleanUrl = url.trim()
         require(cleanUrl.startsWith("http://") || cleanUrl.startsWith("https://")) {
             "Enter a valid http/https link."
@@ -53,10 +54,16 @@ object ZarditEngine {
             YoutubeDL.getInstance().getInfo(cleanUrl)
         } catch (t: Throwable) {
             val msg = t.message.orEmpty()
+            if (detectPlatformName(cleanUrl) == "Instagram") {
+                fetchInstagramEmbedFallback(cleanUrl)?.let { return it }
+                if (InstagramAuth.hasSession(context)) {
+                    fetchWithInstagramCookies(context, cleanUrl)?.let { return it }
+                }
+            }
             if (msg.contains("No video formats found", ignoreCase = true)) {
                 fetchImageFallback(cleanUrl)?.let { return it }
             }
-            throw IllegalStateException(friendlyError(msg))
+            throw IllegalStateException(friendlyError(msg, detectPlatformName(cleanUrl) == "Instagram"))
         }
 
         val formats = info.formats.orEmpty()
@@ -170,6 +177,145 @@ object ZarditEngine {
         )
     }
 
+    private fun fetchInstagramEmbedFallback(url: String): MediaPreview? {
+        val shortcode = Regex("""instagram\.com/(?:reel|reels|p|tv)/([A-Za-z0-9_-]+)""")
+            .find(url)?.groupValues?.getOrNull(1) ?: return null
+        val embedUrl = "https://www.instagram.com/p/$shortcode/embed/captioned/"
+
+        return runCatching {
+            val conn = (URL(embedUrl).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 8000
+                readTimeout = 8000
+                instanceFollowRedirects = true
+                setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/125.0 Mobile Safari/537.36")
+            }
+            val html = conn.inputStream.bufferedReader().use { it.readText().take(768 * 1024) }
+            conn.disconnect()
+
+            val videoUrl = Regex(""""video_url"\s*:\s*"(https?:[^"]+)"""")
+                .find(html)?.groupValues?.getOrNull(1)?.unescapeJsonUrl()
+                ?: Regex("""<video[^>]+src=["'](https?://[^"']+)["']""", RegexOption.IGNORE_CASE)
+                    .find(html)?.groupValues?.getOrNull(1)?.replace("&amp;", "&")
+
+            val displayUrl = Regex(""""display_url"\s*:\s*"(https?:[^"]+)"""")
+                .find(html)?.groupValues?.getOrNull(1)?.unescapeJsonUrl()
+                ?: Regex("""class=["'][^"']*EmbeddedMediaImage[^"']*["'][^>]+src=["'](https?://[^"']+)["']""", RegexOption.IGNORE_CASE)
+                    .find(html)?.groupValues?.getOrNull(1)?.replace("&amp;", "&")
+
+            if (!videoUrl.isNullOrBlank()) {
+                val size = probeUrlSize(videoUrl)
+                return@runCatching MediaPreview(
+                    mediaId = shortcode,
+                    url = url,
+                    title = "Instagram Reel ($shortcode)",
+                    author = "Instagram",
+                    platform = "INSTAGRAM · VIDEO",
+                    durationText = "",
+                    thumbnailUrl = displayUrl,
+                    videoOptions = listOf(
+                        VideoOption(1080, "Original", "HD", "MP4 · Direct stream", size),
+                    ),
+                    audioOptions = defaultAudioOptions.map {
+                        it.copy(approxSizeBytes = size?.let { s -> (s / 5L).coerceAtLeast(80_000L) })
+                    },
+                    directVideoUrl = videoUrl,
+                )
+            }
+
+            if (!displayUrl.isNullOrBlank()) {
+                return@runCatching MediaPreview(
+                    mediaId = shortcode,
+                    url = url,
+                    title = "Instagram Post ($shortcode)",
+                    author = "Instagram",
+                    platform = "INSTAGRAM · IMAGE",
+                    durationText = "1 image",
+                    thumbnailUrl = displayUrl,
+                    videoOptions = emptyList(),
+                    audioOptions = emptyList(),
+                    imageUrls = listOf(displayUrl),
+                )
+            }
+            null
+        }.getOrNull()
+    }
+
+    private fun fetchWithInstagramCookies(context: Context, url: String): MediaPreview? = runCatching {
+        val jsonStr = InstagramAuth.withTempCookieFile(context) { cookieFile ->
+            val req = YoutubeDLRequest(url).apply {
+                addOption("--dump-single-json")
+                addOption("--no-playlist")
+                addOption("--cookies", cookieFile.absolutePath)
+            }
+            YoutubeDL.getInstance().execute(req, null, null).out
+        }
+        if (jsonStr.isBlank()) return@runCatching null
+        val json = JSONObject(jsonStr)
+        val formatsArr = json.optJSONArray("formats")
+        val durationSec = json.optInt("duration", 0)
+        val title = json.optString("title").ifBlank { "Instagram Post" }
+        val id = json.optString("id").ifBlank { url.hashCode().toString() }
+        val uploader = json.optString("uploader").ifBlank { "Instagram" }
+        val thumb = json.optString("thumbnail").takeIf { it.startsWith("http") }
+
+        var probedSize: Long? = null
+        if (formatsArr != null && formatsArr.length() > 0) {
+            val lastFmt = formatsArr.optJSONObject(formatsArr.length() - 1)
+            val fmtUrl = lastFmt?.optString("url")?.takeIf { it.startsWith("http") }
+            val rawSize = lastFmt?.optLong("filesize", 0L)?.takeIf { it > 0L }
+                ?: lastFmt?.optLong("filesize_approx", 0L)?.takeIf { it > 0L }
+            probedSize = rawSize ?: fmtUrl?.let { probeUrlSize(it) }
+        } else {
+            val directUrl = json.optString("url").takeIf { it.startsWith("http") }
+            probedSize = directUrl?.let { probeUrlSize(it) }
+        }
+
+        val hasVideo = formatsArr != null && formatsArr.length() > 0
+        if (!hasVideo && thumb != null) {
+            return@runCatching MediaPreview(
+                mediaId = id,
+                url = url,
+                title = title,
+                author = uploader,
+                platform = "INSTAGRAM · IMAGE",
+                durationText = "1 image",
+                thumbnailUrl = thumb,
+                videoOptions = emptyList(),
+                audioOptions = emptyList(),
+                imageUrls = listOf(thumb),
+                usedInstagramAuth = true,
+            )
+        }
+
+        MediaPreview(
+            mediaId = id,
+            url = url,
+            title = title,
+            author = uploader,
+            platform = "INSTAGRAM · VIDEO",
+            durationText = formatDuration(durationSec),
+            thumbnailUrl = thumb,
+            videoOptions = listOf(
+                VideoOption(1080, "1080p", "Full HD", "MP4 · Best available", probedSize),
+                VideoOption(720, "720p", "HD", "MP4 · Best available", probedSize),
+            ),
+            audioOptions = defaultAudioOptions.map { opt ->
+                val est = if (durationSec > 0 && opt.bitrateKbps != null) {
+                    (durationSec.toLong() * opt.bitrateKbps.toLong() * 1000L) / 8L
+                } else {
+                    probedSize?.let { (it / 5L).coerceAtLeast(80_000L) }
+                }
+                opt.copy(approxSizeBytes = est)
+            },
+            usedInstagramAuth = true,
+        )
+    }.getOrNull()
+
+    private fun String.unescapeJsonUrl(): String =
+        replace("\\/", "/")
+            .replace("\\u0026", "&")
+            .replace("&amp;", "&")
+
     private fun fetchImageFallback(url: String): MediaPreview? {
         // 1. Try yt-dlp --dump-single-json --ignore-errors for carousel thumbnails
         runCatching {
@@ -265,11 +411,15 @@ object ZarditEngine {
         }
     }
 
-    private fun friendlyError(raw: String): String {
+    private fun friendlyError(raw: String, isInstagram: Boolean = false): String {
         val lower = raw.lowercase(Locale.US)
         return when {
             "empty media response" in lower || "login" in lower || "cookies" in lower ->
-                "This post requires login or is temporarily rate-limited by the platform. Try updating the Engine or retry later."
+                if (isInstagram) {
+                    "This Instagram post requires sign-in or is rate-limited. Tap \"IG\" at the top to connect your account locally, or retry later."
+                } else {
+                    "This post requires login or is temporarily rate-limited by the platform. Try updating the Engine or retry later."
+                }
             "no video formats found" in lower ->
                 "No downloadable video or image was found at this link."
             else -> {
@@ -490,6 +640,8 @@ object ZarditEngine {
         audioOption: AudioOption?,
         treeUri: Uri?,
         processId: String,
+        directVideoUrl: String? = null,
+        useInstagramCookies: Boolean = false,
         onProgress: (Float, String) -> Unit,
     ): SaveResult {
         val qTag = qualityTag(mode, videoHeight, audioOption)
@@ -499,10 +651,45 @@ object ZarditEngine {
         }
 
         try {
-            val request = YoutubeDLRequest(url).apply {
+            if (!directVideoUrl.isNullOrBlank() && mode == DownloadMode.VIDEO) {
+                onProgress(15f, "15% · Awakening Charizard…")
+                val id = Regex("""/(?:reel|p|tv)/([A-Za-z0-9_-]+)""").find(url)?.groupValues?.getOrNull(1)
+                    ?: url.hashCode().toString()
+                val outFile = File(workDir, "Instagram [$qTag] [$id].mp4")
+                val conn = (URL(directVideoUrl).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 10000
+                    readTimeout = 20000
+                    instanceFollowRedirects = true
+                    setRequestProperty("User-Agent", "Mozilla/5.0")
+                }
+                val total = conn.contentLengthLong
+                conn.inputStream.use { input ->
+                    outFile.outputStream().use { output ->
+                        val buf = ByteArray(16 * 1024)
+                        var copied = 0L
+                        while (true) {
+                            val read = input.read(buf)
+                            if (read <= 0) break
+                            output.write(buf, 0, read)
+                            copied += read
+                            if (total > 0L) {
+                                val pct = (copied * 100f / total).coerceIn(0f, 99f)
+                                onProgress(pct, ZarditFlavor.formatProgressLine("", pct))
+                            }
+                        }
+                    }
+                }
+                conn.disconnect()
+                return saveOutputFile(context, outFile, mode, treeUri)
+            }
+
+            fun buildRequest(cookiePath: String?): YoutubeDLRequest = YoutubeDLRequest(url).apply {
                 addOption("--no-playlist")
                 addOption("--no-mtime")
                 addOption("-o", "${workDir.absolutePath}/%(title).120B [$qTag] [%(id)s].%(ext)s")
+                if (!cookiePath.isNullOrBlank()) {
+                    addOption("--cookies", cookiePath)
+                }
 
                 when (mode) {
                     DownloadMode.VIDEO -> {
@@ -535,10 +722,18 @@ object ZarditEngine {
                 }
             }
 
-            YoutubeDL.getInstance().execute(request, processId) { progress, _, line ->
+            val progressCallback: (Float, Long, String) -> Unit = { progress, _, line ->
                 val pct = if (progress >= 0f) progress.coerceIn(0f, 100f) else 0f
                 val friendly = ZarditFlavor.formatProgressLine(line, pct)
                 onProgress(pct, friendly)
+            }
+
+            if (useInstagramCookies && InstagramAuth.hasSession(context)) {
+                InstagramAuth.withTempCookieFile(context) { cookieFile ->
+                    YoutubeDL.getInstance().execute(buildRequest(cookieFile.absolutePath), processId, progressCallback)
+                }
+            } else {
+                YoutubeDL.getInstance().execute(buildRequest(null), processId, progressCallback)
             }
 
             val outputFile = workDir.listFiles()
@@ -550,6 +745,27 @@ object ZarditEngine {
         } finally {
             workDir.deleteRecursively()
         }
+    }
+
+    fun deleteSavedFile(context: Context, contentUriStr: String?): Boolean {
+        if (contentUriStr.isNullOrBlank()) return false
+        return runCatching {
+            val uri = Uri.parse(contentUriStr)
+            when (uri.scheme) {
+                "file" -> File(uri.path ?: return false).delete()
+                "content" -> {
+                    val deletedRows = runCatching {
+                        context.contentResolver.delete(uri, null, null)
+                    }.getOrDefault(0)
+                    if (deletedRows > 0) {
+                        true
+                    } else {
+                        DocumentFile.fromSingleUri(context, uri)?.delete() == true
+                    }
+                }
+                else -> false
+            }
+        }.getOrDefault(false)
     }
 
     fun downloadImage(
