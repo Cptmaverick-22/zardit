@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
@@ -37,6 +38,7 @@ import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.History
+import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.LightMode
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
@@ -46,6 +48,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -77,6 +80,7 @@ import io.github.cptmaverick_22.zardit.data.HistoryItem
 import io.github.cptmaverick_22.zardit.downloader.AppTab
 import io.github.cptmaverick_22.zardit.downloader.DownloadMode
 import io.github.cptmaverick_22.zardit.downloader.DownloadState
+import io.github.cptmaverick_22.zardit.downloader.ImageFormat
 import io.github.cptmaverick_22.zardit.downloader.ThemeMode
 import io.github.cptmaverick_22.zardit.downloader.ZarditEngine
 
@@ -130,7 +134,7 @@ fun MainScreen(
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        // Compact Header: Zardit + Theme pill + Update yt-dlp pill
+        // Compact Header
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -273,8 +277,10 @@ fun MainScreen(
                         style = MaterialTheme.typography.bodySmall,
                         modifier = Modifier.weight(1f),
                     )
-                    TextButton(onClick = { viewModel.dismissUpdateBanner() }) {
-                        Text("OK")
+                    if (!ui.isUpdatingYtDlp) {
+                        TextButton(onClick = { viewModel.dismissUpdateBanner() }) {
+                            Text("OK")
+                        }
                     }
                 }
             }
@@ -346,6 +352,14 @@ fun MainScreen(
                                     Text("Fetch", maxLines = 1)
                                 }
                             }
+                        }
+
+                        ui.fetchStatusText?.let { status ->
+                            Text(
+                                text = status,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
                         }
 
                         ui.fetchError?.let { error ->
@@ -425,6 +439,84 @@ fun MainScreen(
                         }
                     }
 
+                    // Playlist item selector
+                    if (preview.isPlaylist && preview.playlistEntries.isNotEmpty()) {
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                            shape = RoundedCornerShape(14.dp),
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(14.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        text = "Selected: ${ui.selectedPlaylistIndices.size}/${preview.playlistEntries.size}",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                    )
+                                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        TextButton(onClick = viewModel::selectAllPlaylist) { Text("All") }
+                                        TextButton(onClick = viewModel::selectNonePlaylist) { Text("None") }
+                                    }
+                                }
+
+                                OutlinedTextField(
+                                    value = ui.playlistRangeText,
+                                    onValueChange = viewModel::onPlaylistRangeChanged,
+                                    label = { Text("Range (e.g. 1-3, 5)") },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(max = 220.dp)
+                                        .verticalScroll(rememberScrollState()),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                                ) {
+                                    preview.playlistEntries.forEach { entry ->
+                                        val checked = entry.index in ui.selectedPlaylistIndices
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .clickable { viewModel.togglePlaylistIndex(entry.index) }
+                                                .padding(vertical = 4.dp, horizontal = 4.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            Checkbox(
+                                                checked = checked,
+                                                onCheckedChange = { viewModel.togglePlaylistIndex(entry.index) },
+                                            )
+                                            Text(
+                                                text = "${entry.index}. ${entry.title}",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                modifier = Modifier.weight(1f),
+                                            )
+                                            if (entry.durationText.isNotEmpty()) {
+                                                Spacer(Modifier.width(6.dp))
+                                                Text(
+                                                    text = entry.durationText,
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // Format selection card
                     Card(
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -436,45 +528,78 @@ fun MainScreen(
                             verticalArrangement = Arrangement.spacedBy(10.dp),
                         ) {
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                FilterChip(
-                                    selected = ui.downloadMode == DownloadMode.VIDEO,
-                                    onClick = { viewModel.onDownloadModeSelected(DownloadMode.VIDEO) },
-                                    leadingIcon = {
-                                        Icon(Icons.Rounded.VideoLibrary, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    },
-                                    label = { Text(DownloadMode.VIDEO.label) },
-                                )
-                                FilterChip(
-                                    selected = ui.downloadMode == DownloadMode.AUDIO,
-                                    onClick = { viewModel.onDownloadModeSelected(DownloadMode.AUDIO) },
-                                    leadingIcon = {
-                                        Icon(Icons.Rounded.Audiotrack, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    },
-                                    label = { Text(DownloadMode.AUDIO.label) },
-                                )
-                            }
-
-                            if (ui.downloadMode == DownloadMode.VIDEO) {
-                                preview.videoOptions.forEach { opt ->
-                                    FormatOptionRow(
-                                        selected = ui.selectedVideoHeight == opt.height,
-                                        title = opt.label,
-                                        badge = opt.badge,
-                                        subtitle = opt.codecHint,
-                                        trailing = ZarditEngine.formatFileSize(opt.approxSizeBytes),
-                                        onClick = { viewModel.onVideoHeightSelected(opt.height) },
+                                if (preview.videoOptions.isNotEmpty()) {
+                                    FilterChip(
+                                        selected = ui.downloadMode == DownloadMode.VIDEO,
+                                        onClick = { viewModel.onDownloadModeSelected(DownloadMode.VIDEO) },
+                                        leadingIcon = {
+                                            Icon(Icons.Rounded.VideoLibrary, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        },
+                                        label = { Text(DownloadMode.VIDEO.label) },
                                     )
                                 }
-                            } else {
-                                preview.audioOptions.forEach { opt ->
-                                    FormatOptionRow(
-                                        selected = ui.selectedAudioId == opt.id,
-                                        title = opt.label,
-                                        badge = "",
-                                        subtitle = opt.subtitle,
-                                        trailing = ZarditEngine.formatFileSize(opt.approxSizeBytes),
-                                        onClick = { viewModel.onAudioOptionSelected(opt) },
+                                if (preview.videoOptions.isNotEmpty() || preview.audioOptions.isNotEmpty()) {
+                                    if (!preview.isPlaylist || preview.videoOptions.isNotEmpty()) {
+                                        FilterChip(
+                                            selected = ui.downloadMode == DownloadMode.AUDIO,
+                                            onClick = { viewModel.onDownloadModeSelected(DownloadMode.AUDIO) },
+                                            leadingIcon = {
+                                                Icon(Icons.Rounded.Audiotrack, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            },
+                                            label = { Text(DownloadMode.AUDIO.label) },
+                                        )
+                                    }
+                                }
+                                if (preview.imageUrls.isNotEmpty()) {
+                                    FilterChip(
+                                        selected = ui.downloadMode == DownloadMode.IMAGE,
+                                        onClick = { viewModel.onDownloadModeSelected(DownloadMode.IMAGE) },
+                                        leadingIcon = {
+                                            Icon(Icons.Rounded.Image, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        },
+                                        label = { Text(DownloadMode.IMAGE.label) },
                                     )
+                                }
+                            }
+
+                            when (ui.downloadMode) {
+                                DownloadMode.VIDEO -> {
+                                    preview.videoOptions.forEach { opt ->
+                                        FormatOptionRow(
+                                            selected = ui.selectedVideoHeight == opt.height,
+                                            title = opt.label,
+                                            badge = opt.badge,
+                                            subtitle = opt.codecHint,
+                                            trailing = ZarditEngine.formatFileSize(opt.approxSizeBytes),
+                                            onClick = { viewModel.onVideoHeightSelected(opt.height) },
+                                        )
+                                    }
+                                }
+
+                                DownloadMode.AUDIO -> {
+                                    preview.audioOptions.forEach { opt ->
+                                        FormatOptionRow(
+                                            selected = ui.selectedAudioId == opt.id,
+                                            title = opt.label,
+                                            badge = "",
+                                            subtitle = opt.subtitle,
+                                            trailing = ZarditEngine.formatFileSize(opt.approxSizeBytes),
+                                            onClick = { viewModel.onAudioOptionSelected(opt) },
+                                        )
+                                    }
+                                }
+
+                                DownloadMode.IMAGE -> {
+                                    ImageFormat.entries.forEach { fmt ->
+                                        FormatOptionRow(
+                                            selected = ui.selectedImageFormat == fmt,
+                                            title = fmt.label,
+                                            badge = "",
+                                            subtitle = fmt.subtitle,
+                                            trailing = "",
+                                            onClick = { viewModel.onImageFormatSelected(fmt) },
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -528,7 +653,6 @@ fun MainScreen(
                             }
                         }
 
-                        // Only show "Already saved" when Idle (switching back to an existing quality)
                         if (!isJustCompleted && !isRunning) {
                             ui.existingDownloadPath?.let { existing ->
                                 Row(
@@ -609,9 +733,10 @@ fun MainScreen(
 
                         if (!isRunning && ui.preview != null && !isJustCompleted) {
                             val alreadyDownloaded = ui.existingDownloadPath != null
+                            val playlistEmpty = ui.preview?.isPlaylist == true && ui.selectedPlaylistIndices.isEmpty()
                             Button(
                                 onClick = { triggerDownload() },
-                                enabled = !alreadyDownloaded,
+                                enabled = !alreadyDownloaded && !playlistEmpty,
                                 colors = ButtonDefaults.buttonColors(
                                     containerColor = MaterialTheme.colorScheme.primary,
                                 ),
@@ -623,7 +748,12 @@ fun MainScreen(
                                     modifier = Modifier.size(18.dp),
                                 )
                                 Spacer(Modifier.width(8.dp))
-                                Text(if (alreadyDownloaded) "Already Downloaded" else "Download")
+                                val buttonText = when {
+                                    alreadyDownloaded -> "Already Downloaded"
+                                    ui.preview?.isPlaylist == true -> "Download (${ui.selectedPlaylistIndices.size} selected)"
+                                    else -> "Download"
+                                }
+                                Text(buttonText)
                             }
                         }
                     }
@@ -639,6 +769,9 @@ fun MainScreen(
                             val mime = when {
                                 item.fileName.endsWith(".mp3", true) -> "audio/mpeg"
                                 item.fileName.endsWith(".m4a", true) -> "audio/mp4"
+                                item.fileName.endsWith(".png", true) -> "image/png"
+                                item.fileName.endsWith(".webp", true) -> "image/webp"
+                                item.fileName.endsWith(".jpg", true) || item.fileName.endsWith(".jpeg", true) -> "image/jpeg"
                                 else -> "video/mp4"
                             }
                             val intent = Intent(Intent.ACTION_VIEW).apply {
@@ -691,7 +824,7 @@ private fun HistoryTab(
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text(
-                    text = "No downloads yet. Downloaded videos and audio will appear here.",
+                    text = "No downloads yet. Downloaded videos, audio, and images will appear here.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(16.dp),
@@ -726,22 +859,17 @@ private fun HistoryTab(
                     modifier = Modifier.padding(12.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
+                    Surface(
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        shape = RoundedCornerShape(6.dp),
                     ) {
-                        Surface(
-                            color = MaterialTheme.colorScheme.primaryContainer,
-                            shape = RoundedCornerShape(6.dp),
-                        ) {
-                            Text(
-                                text = "${item.platform} · ${item.qualityLabel}",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                fontWeight = FontWeight.SemiBold,
-                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
-                            )
-                        }
+                        Text(
+                            text = "${item.platform} · ${item.qualityLabel}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+                        )
                     }
                     Text(
                         text = item.title,

@@ -13,9 +13,11 @@ import io.github.cptmaverick_22.zardit.downloader.AppTab
 import io.github.cptmaverick_22.zardit.downloader.AudioOption
 import io.github.cptmaverick_22.zardit.downloader.DownloadMode
 import io.github.cptmaverick_22.zardit.downloader.DownloadState
+import io.github.cptmaverick_22.zardit.downloader.ImageFormat
 import io.github.cptmaverick_22.zardit.downloader.MediaPreview
 import io.github.cptmaverick_22.zardit.downloader.ThemeMode
 import io.github.cptmaverick_22.zardit.downloader.ZarditEngine
+import io.github.cptmaverick_22.zardit.downloader.ZarditFlavor
 import io.github.cptmaverick_22.zardit.service.DownloadService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -33,11 +35,15 @@ data class MainUiState(
     val folderDisplayName: String = "Downloads/Zardit",
     val hasCustomFolder: Boolean = false,
     val isFetching: Boolean = false,
+    val fetchStatusText: String? = null,
     val fetchError: String? = null,
     val preview: MediaPreview? = null,
     val downloadMode: DownloadMode = DownloadMode.VIDEO,
     val selectedVideoHeight: Int? = null,
     val selectedAudioId: String = "mp3_192",
+    val selectedImageFormat: ImageFormat = ImageFormat.ORIGINAL,
+    val selectedPlaylistIndices: Set<Int> = emptySet(),
+    val playlistRangeText: String = "",
     val existingDownloadPath: String? = null,
     val isUpdatingYtDlp: Boolean = false,
     val updateBanner: String? = null,
@@ -135,6 +141,36 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         checkDuplicateSelection()
     }
 
+    fun onImageFormatSelected(format: ImageFormat) {
+        DownloadService.resetState()
+        _uiState.update { it.copy(selectedImageFormat = format) }
+        checkDuplicateSelection()
+    }
+
+    fun togglePlaylistIndex(index: Int) {
+        DownloadService.resetState()
+        _uiState.update { state ->
+            val updated = state.selectedPlaylistIndices.toMutableSet()
+            if (!updated.add(index)) updated.remove(index)
+            state.copy(selectedPlaylistIndices = updated)
+        }
+    }
+
+    fun selectAllPlaylist() {
+        val total = _uiState.value.preview?.playlistEntries?.size ?: return
+        _uiState.update { it.copy(selectedPlaylistIndices = (1..total).toSet(), playlistRangeText = "") }
+    }
+
+    fun selectNonePlaylist() {
+        _uiState.update { it.copy(selectedPlaylistIndices = emptySet(), playlistRangeText = "") }
+    }
+
+    fun onPlaylistRangeChanged(rangeText: String) {
+        val total = _uiState.value.preview?.playlistEntries?.size ?: return
+        val parsed = ZarditEngine.parseRangeSelection(rangeText, total)
+        _uiState.update { it.copy(playlistRangeText = rangeText, selectedPlaylistIndices = parsed) }
+    }
+
     fun dismissUpdateBanner() {
         _uiState.update { it.copy(updateBanner = null) }
     }
@@ -162,7 +198,14 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         }
 
         DownloadService.resetState()
-        _uiState.update { it.copy(isFetching = true, fetchError = null, existingDownloadPath = null) }
+        _uiState.update {
+            it.copy(
+                isFetching = true,
+                fetchStatusText = ZarditFlavor.randomFetchLine(),
+                fetchError = null,
+                existingDownloadPath = null,
+            )
+        }
 
         viewModelScope.launch(Dispatchers.IO) {
             runCatching { ZarditEngine.fetchPreview(target) }
@@ -170,11 +213,25 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
                     val defaultHeight = preview.videoOptions
                         .firstOrNull { it.height <= 1080 }?.height
                         ?: preview.videoOptions.firstOrNull()?.height
+                    val defaultMode = if (preview.imageUrls.isNotEmpty() && preview.videoOptions.isEmpty()) {
+                        DownloadMode.IMAGE
+                    } else {
+                        DownloadMode.VIDEO
+                    }
+                    val allPlaylistIndices = if (preview.isPlaylist) {
+                        (1..preview.playlistEntries.size).toSet()
+                    } else {
+                        emptySet()
+                    }
                     _uiState.update {
                         it.copy(
                             isFetching = false,
+                            fetchStatusText = null,
                             preview = preview,
+                            downloadMode = defaultMode,
                             selectedVideoHeight = defaultHeight,
+                            selectedPlaylistIndices = allPlaylistIndices,
+                            playlistRangeText = "",
                             fetchError = null,
                         )
                     }
@@ -184,6 +241,7 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
                     _uiState.update {
                         it.copy(
                             isFetching = false,
+                            fetchStatusText = null,
                             fetchError = err.message ?: "Could not fetch media info.",
                         )
                     }
@@ -194,9 +252,22 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
     private fun checkDuplicateSelection() {
         val current = _uiState.value
         val preview = current.preview ?: return
+        if (preview.isPlaylist) {
+            _uiState.update { it.copy(existingDownloadPath = null) }
+            return
+        }
         val audioOpt = preview.audioOptions.find { it.id == current.selectedAudioId }
-        val qTag = ZarditEngine.qualityTag(current.downloadMode, current.selectedVideoHeight, audioOpt)
-        val ext = ZarditEngine.targetExtension(current.downloadMode, audioOpt)
+        val qTag = ZarditEngine.qualityTag(
+            current.downloadMode,
+            current.selectedVideoHeight,
+            audioOpt,
+            current.selectedImageFormat,
+        )
+        val ext = ZarditEngine.targetExtension(
+            current.downloadMode,
+            audioOpt,
+            current.selectedImageFormat,
+        )
 
         viewModelScope.launch(Dispatchers.IO) {
             val existing = ZarditEngine.findExistingDownload(
@@ -214,8 +285,33 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         val current = _uiState.value
         val preview = current.preview ?: return
         if (current.existingDownloadPath != null) return
+
         val basePlatform = preview.platform.substringBefore(" · ")
-        val mediaKind = if (current.downloadMode == DownloadMode.AUDIO) "AUDIO" else "VIDEO"
+        val mediaKind = when (current.downloadMode) {
+            DownloadMode.AUDIO -> "AUDIO"
+            DownloadMode.IMAGE -> "IMAGE"
+            DownloadMode.VIDEO -> "VIDEO"
+        }
+
+        if (preview.isPlaylist) {
+            val selected = preview.playlistEntries.filter { it.index in current.selectedPlaylistIndices }
+            if (selected.isEmpty()) return
+            DownloadService.start(
+                context = app,
+                url = preview.url,
+                mediaId = preview.mediaId,
+                title = preview.title,
+                platform = "$basePlatform · $mediaKind",
+                mode = current.downloadMode,
+                videoHeight = current.selectedVideoHeight,
+                audioId = current.selectedAudioId,
+                batchUrls = selected.map { it.url },
+                batchTitles = selected.map { it.title },
+                batchIds = selected.map { it.id },
+            )
+            return
+        }
+
         DownloadService.start(
             context = app,
             url = preview.url,
@@ -225,6 +321,8 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
             mode = current.downloadMode,
             videoHeight = current.selectedVideoHeight,
             audioId = current.selectedAudioId,
+            imageFormat = current.selectedImageFormat,
+            imageUrls = preview.imageUrls,
         )
     }
 
@@ -234,7 +332,7 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
 
     fun updateYtDlp() {
         if (_uiState.value.isUpdatingYtDlp) return
-        _uiState.update { it.copy(isUpdatingYtDlp = true, updateBanner = null) }
+        _uiState.update { it.copy(isUpdatingYtDlp = true, updateBanner = "Teaching Charizard new moves…") }
         viewModelScope.launch(Dispatchers.IO) {
             val msg = runCatching { ZarditEngine.updateYtDlp(app) }
                 .getOrElse { err -> "Update failed: ${err.message}" }

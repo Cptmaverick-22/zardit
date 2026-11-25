@@ -14,6 +14,14 @@ enum class AppTab(val label: String) {
 enum class DownloadMode(val label: String) {
     VIDEO("Video (MP4)"),
     AUDIO("Audio"),
+    IMAGE("Image"),
+}
+
+enum class ImageFormat(val id: String, val label: String, val subtitle: String, val ext: String) {
+    ORIGINAL("orig", "Original", "Native resolution · No re-encoding", "jpg"),
+    PNG("png", "PNG", "Lossless · High quality", "png"),
+    JPG("jpg", "JPG", "Universal · Compact", "jpg"),
+    WEBP("webp", "WebP", "Modern · Smallest size", "webp"),
 }
 
 data class VideoOption(
@@ -33,6 +41,15 @@ data class AudioOption(
     val approxSizeBytes: Long? = null,
 )
 
+data class PlaylistEntry(
+    val index: Int,
+    val id: String,
+    val title: String,
+    val url: String,
+    val durationText: String,
+    val thumbnailUrl: String?,
+)
+
 data class MediaPreview(
     val mediaId: String,
     val url: String,
@@ -43,6 +60,9 @@ data class MediaPreview(
     val thumbnailUrl: String?,
     val videoOptions: List<VideoOption>,
     val audioOptions: List<AudioOption>,
+    val imageUrls: List<String> = emptyList(),
+    val isPlaylist: Boolean = false,
+    val playlistEntries: List<PlaylistEntry> = emptyList(),
 )
 
 data class SaveResult(

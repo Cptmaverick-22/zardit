@@ -2,6 +2,8 @@ package io.github.cptmaverick_22.zardit.downloader
 
 import android.content.ContentValues
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
@@ -10,8 +12,10 @@ import androidx.documentfile.provider.DocumentFile
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.Locale
-import kotlin.math.roundToInt
+import org.json.JSONObject
 
 object ZarditEngine {
 
@@ -22,23 +26,47 @@ object ZarditEngine {
         AudioOption("orig_m4a", "Original", "M4A · No re-encoding", null, isOriginal = true),
     )
 
+    private val imageExts = setOf("jpg", "jpeg", "png", "webp")
+
+    fun isPlaylistUrl(url: String): Boolean {
+        val lower = url.lowercase(Locale.US)
+        return lower.contains("/playlist?") ||
+            (lower.contains("list=") && !lower.contains("watch?v=") && !lower.contains("youtu.be/")) ||
+            lower.contains("/sets/")
+    }
+
     fun fetchPreview(url: String): MediaPreview {
         val cleanUrl = url.trim()
         require(cleanUrl.startsWith("http://") || cleanUrl.startsWith("https://")) {
             "Enter a valid http/https link."
         }
 
+        if (isPlaylistUrl(cleanUrl)) {
+            fetchPlaylistPreview(cleanUrl)?.let { return it }
+        }
+
         val info = YoutubeDL.getInstance().getInfo(cleanUrl)
         val formats = info.formats.orEmpty()
         val durationSec = info.duration.coerceAtLeast(0)
 
-        val bestAudioSize = formats
+        var bestAudioSize = formats
             .filter { f -> f.vcodec == "none" && f.acodec != "none" }
-            .maxOfOrNull { it.fileSize.coerceAtLeast(it.fileSizeApproximate) }
-            ?: 0L
+            .maxOfOrNull { f ->
+                val raw = f.fileSize.coerceAtLeast(f.fileSizeApproximate)
+                if (raw > 0L) raw else if (durationSec > 0 && f.tbr > 0) (durationSec * f.tbr * 1000.0 / 8.0).toLong() else 0L
+            } ?: 0L
+
+        if (bestAudioSize <= 0L) {
+            val audioUrl = formats
+                .lastOrNull { f -> f.vcodec == "none" && f.acodec != "none" && !f.url.isNullOrBlank() }
+                ?.url
+            if (!audioUrl.isNullOrBlank()) {
+                bestAudioSize = probeUrlSize(audioUrl) ?: 0L
+            }
+        }
 
         val heightBuckets = listOf(2160, 1440, 1080, 720, 480, 360, 240, 144)
-        val videoOptions = heightBuckets.mapNotNull { h ->
+        var videoOptions = heightBuckets.mapNotNull { h ->
             val matching = formats.filter { f ->
                 f.height in (h - 20)..(h + 20) && f.vcodec != "none"
             }
@@ -47,8 +75,20 @@ object ZarditEngine {
             val bestVideo = matching.maxByOrNull {
                 it.fileSize.coerceAtLeast(it.fileSizeApproximate)
             }
-            val videoBytes = bestVideo?.let { it.fileSize.coerceAtLeast(it.fileSizeApproximate) } ?: 0L
-            val approxTotal = if (videoBytes > 0L) videoBytes + bestAudioSize else null
+            var videoBytes = bestVideo?.let { it.fileSize.coerceAtLeast(it.fileSizeApproximate) } ?: 0L
+            if (videoBytes <= 0L && bestVideo != null) {
+                if (durationSec > 0 && bestVideo.tbr > 0) {
+                    videoBytes = (durationSec * bestVideo.tbr * 1000.0 / 8.0).toLong()
+                } else if (!bestVideo.url.isNullOrBlank()) {
+                    videoBytes = probeUrlSize(bestVideo.url!!) ?: 0L
+                }
+            }
+            val needsAudioAdd = bestVideo?.acodec == "none"
+            val approxTotal = if (videoBytes > 0L) {
+                videoBytes + (if (needsAudioAdd) bestAudioSize else 0L)
+            } else {
+                null
+            }
             val codecHint = if (h >= 1440) "MP4 · AV1/H.264" else "MP4 · H.264"
             VideoOption(
                 height = h,
@@ -57,20 +97,41 @@ object ZarditEngine {
                 codecHint = codecHint,
                 approxSizeBytes = approxTotal,
             )
-        }.ifEmpty {
-            listOf(
-                VideoOption(1080, "1080p", "Full HD", "MP4 · Best available", null),
-                VideoOption(720, "720p", "HD", "MP4 · Best available", null),
-                VideoOption(480, "480p", "SD", "MP4 · Best available", null),
+        }
+
+        val isPureImage = (info.ext?.lowercase(Locale.US) in imageExts) ||
+            (videoOptions.isEmpty() && formats.none { it.vcodec != "none" && it.vcodec != null })
+
+        val imageUrls = buildList {
+            if (isPureImage && !info.url.isNullOrBlank() && info.url!!.startsWith("http")) {
+                add(info.url!!)
+            } else if (isPureImage && !info.thumbnail.isNullOrBlank() && info.thumbnail!!.startsWith("http")) {
+                add(info.thumbnail!!)
+            }
+        }
+
+        if (videoOptions.isEmpty() && !isPureImage) {
+            val fallbackSize = info.url?.takeIf { it.startsWith("http") }?.let { probeUrlSize(it) }
+            videoOptions = listOf(
+                VideoOption(1080, "1080p", "Full HD", "MP4 · Best available", fallbackSize),
+                VideoOption(720, "720p", "HD", "MP4 · Best available", fallbackSize),
+                VideoOption(480, "480p", "SD", "MP4 · Best available", fallbackSize),
             )
         }
 
+        // Estimate audio sizes even when duration == 0 (e.g. Instagram) using probed stream size
+        val fallbackVideoSize = videoOptions.firstOrNull { it.approxSizeBytes != null }?.approxSizeBytes
         val audioOptions = defaultAudioOptions.map { opt ->
             val estimated = when {
                 opt.isOriginal -> bestAudioSize.takeIf { it > 0L }
-                    ?: if (durationSec > 0) (durationSec.toLong() * 128_000L) / 8L else null
+                    ?: if (durationSec > 0) (durationSec.toLong() * 128_000L) / 8L
+                    else fallbackVideoSize?.let { (it / 5L).coerceAtLeast(100_000L) }
                 opt.bitrateKbps != null && durationSec > 0 ->
                     (durationSec.toLong() * opt.bitrateKbps.toLong() * 1000L) / 8L
+                opt.bitrateKbps != null && bestAudioSize > 0L ->
+                    (bestAudioSize * opt.bitrateKbps.toLong()) / 128L
+                opt.bitrateKbps != null && fallbackVideoSize != null ->
+                    ((fallbackVideoSize / 5L) * opt.bitrateKbps.toLong() / 128L).coerceAtLeast(80_000L)
                 else -> null
             }
             opt.copy(approxSizeBytes = estimated)
@@ -79,24 +140,121 @@ object ZarditEngine {
         val platform = (info.extractorKey ?: info.extractor ?: "Web")
             .replace("Tab", "")
             .uppercase(Locale.US)
+        val kindLabel = if (isPureImage && imageUrls.isNotEmpty()) "IMAGE" else "VIDEO"
 
         return MediaPreview(
             mediaId = info.id?.ifBlank { null } ?: cleanUrl.hashCode().toString(),
             url = cleanUrl,
             title = info.title?.ifBlank { null } ?: "Untitled media",
             author = info.uploader?.ifBlank { null } ?: "Unknown creator",
-            platform = "$platform · VIDEO",
+            platform = "$platform · $kindLabel",
             durationText = formatDuration(durationSec),
             thumbnailUrl = info.thumbnail?.takeIf { it.startsWith("https://") || it.startsWith("http://") },
             videoOptions = videoOptions,
             audioOptions = audioOptions,
+            imageUrls = imageUrls,
         )
     }
+
+    private fun fetchPlaylistPreview(url: String): MediaPreview? = runCatching {
+        val request = YoutubeDLRequest(url).apply {
+            addOption("--flat-playlist")
+            addOption("--dump-single-json")
+        }
+        val response = YoutubeDL.getInstance().execute(request, null, null)
+        val json = JSONObject(response.out)
+        val entriesArr = json.optJSONArray("entries") ?: return@runCatching null
+        if (entriesArr.length() == 0) return@runCatching null
+
+        val entries = buildList {
+            for (i in 0 until entriesArr.length()) {
+                val obj = entriesArr.optJSONObject(i) ?: continue
+                val id = obj.optString("id").ifBlank { "${i + 1}" }
+                val entryUrl = obj.optString("url").ifBlank { obj.optString("webpage_url") }
+                    .let { raw ->
+                        if (raw.startsWith("http")) raw else "https://www.youtube.com/watch?v=$id"
+                    }
+                val thumb = obj.optJSONArray("thumbnails")?.let { thumbs ->
+                    if (thumbs.length() > 0) thumbs.optJSONObject(thumbs.length() - 1)?.optString("url") else null
+                } ?: obj.optString("thumbnail").ifBlank { null }
+                add(
+                    PlaylistEntry(
+                        index = i + 1,
+                        id = id,
+                        title = obj.optString("title").ifBlank { "Item ${i + 1}" },
+                        url = entryUrl,
+                        durationText = formatDuration(obj.optInt("duration", 0)),
+                        thumbnailUrl = thumb,
+                    ),
+                )
+            }
+        }
+        if (entries.isEmpty()) return@runCatching null
+
+        val platform = json.optString("extractor_key", "PLAYLIST")
+            .replace("Tab", "")
+            .uppercase(Locale.US)
+        MediaPreview(
+            mediaId = json.optString("id").ifBlank { url.hashCode().toString() },
+            url = url,
+            title = json.optString("title").ifBlank { "Playlist (${entries.size} items)" },
+            author = json.optString("uploader").ifBlank { "${entries.size} items" },
+            platform = "$platform · PLAYLIST",
+            durationText = "${entries.size} items",
+            thumbnailUrl = entries.firstOrNull()?.thumbnailUrl,
+            videoOptions = listOf(
+                VideoOption(1080, "1080p", "Full HD", "MP4 · H.264", null),
+                VideoOption(720, "720p", "HD", "MP4 · H.264", null),
+                VideoOption(480, "480p", "SD", "MP4 · H.264", null),
+                VideoOption(360, "360p", "Low", "MP4 · H.264", null),
+            ),
+            audioOptions = defaultAudioOptions,
+            isPlaylist = true,
+            playlistEntries = entries,
+        )
+    }.getOrNull()
+
+    fun parseRangeSelection(input: String, total: Int): Set<Int> {
+        if (input.isBlank()) return (1..total).toSet()
+        val result = linkedSetOf<Int>()
+        input.split(",").forEach { part ->
+            val trimmed = part.trim()
+            if (trimmed.contains("-")) {
+                val bounds = trimmed.split("-", limit = 2)
+                val start = bounds[0].trim().toIntOrNull()
+                val end = bounds[1].trim().toIntOrNull()
+                if (start != null && end != null) {
+                    val lo = start.coerceIn(1, total)
+                    val hi = end.coerceIn(1, total)
+                    for (i in minOf(lo, hi)..maxOf(lo, hi)) result.add(i)
+                }
+            } else {
+                trimmed.toIntOrNull()?.takeIf { it in 1..total }?.let { result.add(it) }
+            }
+        }
+        return result
+    }
+
+    private fun probeUrlSize(url: String): Long? = runCatching {
+        val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+            requestMethod = "HEAD"
+            connectTimeout = 3000
+            readTimeout = 3000
+            setRequestProperty("User-Agent", "Mozilla/5.0")
+        }
+        try {
+            val len = conn.contentLengthLong
+            if (len > 0L) len else null
+        } finally {
+            conn.disconnect()
+        }
+    }.getOrNull()
 
     fun qualityTag(
         mode: DownloadMode,
         videoHeight: Int?,
         audioOption: AudioOption?,
+        imageFormat: ImageFormat = ImageFormat.ORIGINAL,
     ): String = when (mode) {
         DownloadMode.VIDEO -> "${videoHeight ?: 1080}p"
         DownloadMode.AUDIO -> if (audioOption?.isOriginal == true) {
@@ -104,11 +262,17 @@ object ZarditEngine {
         } else {
             "${audioOption?.bitrateKbps ?: 192}kbps"
         }
+        DownloadMode.IMAGE -> imageFormat.id
     }
 
-    fun targetExtension(mode: DownloadMode, audioOption: AudioOption?): String = when (mode) {
+    fun targetExtension(
+        mode: DownloadMode,
+        audioOption: AudioOption?,
+        imageFormat: ImageFormat = ImageFormat.ORIGINAL,
+    ): String = when (mode) {
         DownloadMode.VIDEO -> "mp4"
         DownloadMode.AUDIO -> if (audioOption?.isOriginal == true) "m4a" else "mp3"
+        DownloadMode.IMAGE -> imageFormat.ext
     }
 
     fun findExistingDownload(
@@ -220,18 +384,16 @@ object ZarditEngine {
                             addOption("--audio-quality", "${kbps}K")
                         }
                     }
+
+                    DownloadMode.IMAGE -> error("Use downloadImage for Image mode.")
                 }
             }
 
             YoutubeDL.getInstance().execute(request, processId) { progress, etaInSeconds, line ->
                 val pct = if (progress >= 0f) progress.coerceIn(0f, 100f) else 0f
                 val etaText = if (etaInSeconds > 0) " · ETA ${formatDuration(etaInSeconds.toInt())}" else ""
-                val status = if (pct > 0f) {
-                    "${pct.roundToInt()}%$etaText"
-                } else {
-                    line.take(60).ifBlank { "Downloading..." }
-                }
-                onProgress(pct, status)
+                val friendly = ZarditFlavor.formatProgressLine(line, pct, etaText)
+                onProgress(pct, friendly)
             }
 
             val outputFile = workDir.listFiles()
@@ -245,6 +407,57 @@ object ZarditEngine {
         }
     }
 
+    fun downloadImage(
+        context: Context,
+        imageUrl: String,
+        title: String,
+        mediaId: String,
+        format: ImageFormat,
+        treeUri: Uri?,
+        onProgress: (Float, String) -> Unit,
+    ): SaveResult {
+        onProgress(15f, "Using Flash on the image…")
+        val rawBytes = URL(imageUrl).openConnection().run {
+            connectTimeout = 10000
+            readTimeout = 15000
+            setRequestProperty("User-Agent", "Mozilla/5.0")
+            getInputStream().use { it.readBytes() }
+        }
+        onProgress(70f, "Evolving image format…")
+
+        val safeTitle = title.replace(Regex("[\\\\/:*?\"<>|]"), "-").take(80).ifBlank { "image" }
+        val fileName = "$safeTitle [${format.id}] [$mediaId].${format.ext}"
+        val tempFile = File(context.cacheDir, fileName)
+
+        try {
+            if (format == ImageFormat.ORIGINAL) {
+                tempFile.writeBytes(rawBytes)
+            } else {
+                val bmp = BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size)
+                    ?: error("Could not decode image.")
+                val compressFormat = when (format) {
+                    ImageFormat.PNG -> Bitmap.CompressFormat.PNG
+                    ImageFormat.JPG -> Bitmap.CompressFormat.JPEG
+                    ImageFormat.WEBP -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                        Bitmap.CompressFormat.WEBP_LOSSY
+                    } else {
+                        @Suppress("DEPRECATION")
+                        Bitmap.CompressFormat.WEBP
+                    }
+                    ImageFormat.ORIGINAL -> Bitmap.CompressFormat.JPEG
+                }
+                tempFile.outputStream().use { out ->
+                    bmp.compress(compressFormat, 92, out)
+                }
+                bmp.recycle()
+            }
+            onProgress(95f, "Catching into Downloads…")
+            return saveOutputFile(context, tempFile, DownloadMode.IMAGE, treeUri)
+        } finally {
+            tempFile.delete()
+        }
+    }
+
     fun cancel(processId: String) {
         runCatching { YoutubeDL.getInstance().destroyProcessById(processId) }
     }
@@ -255,8 +468,8 @@ object ZarditEngine {
             YoutubeDL.UpdateChannel.STABLE,
         )
         return when (status) {
-            YoutubeDL.UpdateStatus.DONE -> "yt-dlp updated to the latest version."
-            YoutubeDL.UpdateStatus.ALREADY_UP_TO_DATE -> "yt-dlp is already up to date."
+            YoutubeDL.UpdateStatus.DONE -> "Charizard learned new moves! (yt-dlp updated)"
+            YoutubeDL.UpdateStatus.ALREADY_UP_TO_DATE -> "Charizard is already at max level! (yt-dlp up to date)"
             else -> "yt-dlp update completed."
         }
     }
@@ -271,7 +484,14 @@ object ZarditEngine {
             "mp4" -> "video/mp4"
             "mp3" -> "audio/mpeg"
             "m4a" -> "audio/mp4"
-            else -> if (mode == DownloadMode.AUDIO) "audio/*" else "video/*"
+            "png" -> "image/png"
+            "webp" -> "image/webp"
+            "jpg", "jpeg" -> "image/jpeg"
+            else -> when (mode) {
+                DownloadMode.AUDIO -> "audio/*"
+                DownloadMode.IMAGE -> "image/*"
+                DownloadMode.VIDEO -> "video/*"
+            }
         }
 
         if (treeUri != null) {
