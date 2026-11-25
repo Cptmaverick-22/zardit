@@ -203,7 +203,7 @@ fun MainScreen(
                 }
                 Spacer(Modifier.width(5.dp))
                 Text(
-                    text = "yt-dlp",
+                    text = "Engine",
                     style = MaterialTheme.typography.labelMedium,
                     maxLines = 1,
                     softWrap = false,

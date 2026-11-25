@@ -269,7 +269,7 @@ object ZarditEngine {
         val lower = raw.lowercase(Locale.US)
         return when {
             "empty media response" in lower || "login" in lower || "cookies" in lower ->
-                "This post requires login or is temporarily rate-limited by the platform. Try updating yt-dlp or retry later."
+                "This post requires login or is temporarily rate-limited by the platform. Try updating the Engine or retry later."
             "no video formats found" in lower ->
                 "No downloadable video or image was found at this link."
             else -> {
@@ -612,10 +612,15 @@ object ZarditEngine {
             context,
             YoutubeDL.UpdateChannel.STABLE,
         )
+        val ver = runCatching { YoutubeDL.getInstance().version(context) }
+            .getOrNull()
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+        val verSuffix = if (ver != null) " (v$ver)" else ""
         return when (status) {
-            YoutubeDL.UpdateStatus.DONE -> "Charizard learned new moves! (yt-dlp updated)"
-            YoutubeDL.UpdateStatus.ALREADY_UP_TO_DATE -> "Charizard is already at max level! (yt-dlp up to date)"
-            else -> "yt-dlp update completed."
+            YoutubeDL.UpdateStatus.DONE -> "Engine leveled up!$verSuffix"
+            YoutubeDL.UpdateStatus.ALREADY_UP_TO_DATE -> "Engine is already at max level!$verSuffix"
+            else -> "Engine update completed.$verSuffix"
         }
     }
 

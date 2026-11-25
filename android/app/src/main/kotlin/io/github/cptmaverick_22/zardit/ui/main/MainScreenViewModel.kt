@@ -88,7 +88,21 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun onUrlChanged(value: String) {
-        _uiState.update { it.copy(url = value, fetchError = null) }
+        if (value.isBlank()) {
+            DownloadService.resetState()
+            _uiState.update {
+                it.copy(
+                    url = value,
+                    fetchError = null,
+                    preview = null,
+                    existingDownloadPath = null,
+                    selectedPlaylistIndices = emptySet(),
+                    playlistRangeText = "",
+                )
+            }
+        } else {
+            _uiState.update { it.copy(url = value, fetchError = null) }
+        }
     }
 
     fun onThemeModeSelected(mode: ThemeMode) {
