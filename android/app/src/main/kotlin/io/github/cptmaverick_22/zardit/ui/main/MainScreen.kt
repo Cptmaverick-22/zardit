@@ -645,17 +645,15 @@ fun MainScreen(
                                         label = { Text(DownloadMode.VIDEO.label) },
                                     )
                                 }
-                                if (preview.videoOptions.isNotEmpty() || preview.audioOptions.isNotEmpty()) {
-                                    if (!preview.isPlaylist || preview.videoOptions.isNotEmpty()) {
-                                        FilterChip(
-                                            selected = ui.downloadMode == DownloadMode.AUDIO,
-                                            onClick = { viewModel.onDownloadModeSelected(DownloadMode.AUDIO) },
-                                            leadingIcon = {
-                                                Icon(Icons.Rounded.Audiotrack, contentDescription = null, modifier = Modifier.size(16.dp))
-                                            },
-                                            label = { Text(DownloadMode.AUDIO.label) },
-                                        )
-                                    }
+                                if (preview.audioOptions.isNotEmpty()) {
+                                    FilterChip(
+                                        selected = ui.downloadMode == DownloadMode.AUDIO,
+                                        onClick = { viewModel.onDownloadModeSelected(DownloadMode.AUDIO) },
+                                        leadingIcon = {
+                                            Icon(Icons.Rounded.Audiotrack, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        },
+                                        label = { Text(DownloadMode.AUDIO.label) },
+                                    )
                                 }
                                 if (preview.imageUrls.isNotEmpty()) {
                                     FilterChip(
