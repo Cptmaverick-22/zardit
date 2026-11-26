@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 import urllib.request
+import xml.etree.ElementTree as ET
 
 import yt_dlp
 from yt_dlp.utils import DownloadCancelled as _YtdlpCancelled
@@ -31,6 +32,7 @@ from yt_dlp.utils import DownloadError as _YtdlpDownloadError
 from yt_dlp.utils import UnavailableVideoError
 
 from config import (
+    APP_VERSION,
     AUDIO_BITRATES,
     AUDIO_CHOICES,
     IMAGE_FORMATS,
@@ -526,12 +528,298 @@ def safe_folder_name(name, fallback="Playlist"):
 # Fetching information
 # --------------------------------------------------------------------------
 
+_THREADS_HEADERS = {
+    "User-Agent": "curl/8.5.0",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+_THREADS_MEDIA_HEADERS = {
+    "User-Agent": "Mozilla/5.0",
+    "Referer": "https://www.threads.com/",
+}
+_THREADS_DASH_RE = re.compile(
+    r'"video_dash_manifest"\s*:\s*"((?:\\.|[^"\\])*)"'
+)
+_THREADS_VIDEO_VERSIONS_RE = re.compile(
+    r'"video_versions"\s*:\s*(\[[^\]]+\])'
+)
+_THREADS_VIDEO_URL_RE = re.compile(
+    r'"video_url"\s*:\s*"((?:\\.|[^"\\])*)"'
+)
+_THREADS_DIMS_RE = re.compile(
+    r'"original_(width|height)"\s*:\s*(\d+)'
+)
+
+
+def _decode_json_str(raw):
+    try:
+        return json.loads(f'"{raw}"')
+    except Exception:
+        return raw.replace("\\/", "/").replace("\\u0026", "&").replace("&amp;", "&")
+
+
+def _parse_threads_dash_manifest(xml_text):
+    """Extract DASH video and audio format dicts from Threads MPD XML."""
+
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return []
+
+    formats = []
+    seen_urls = set()
+    for elem in root.iter():
+        if elem.tag.rsplit("}", 1)[-1] != "Representation":
+            continue
+        mime = (elem.attrib.get("mimeType") or "").lower()
+        base_url = None
+        for child in elem:
+            if child.tag.rsplit("}", 1)[-1] == "BaseURL" and child.text:
+                base_url = html.unescape(child.text.strip())
+                break
+        if not base_url or not base_url.startswith("https://") or base_url in seen_urls:
+            continue
+        seen_urls.add(base_url)
+
+        fmt_id = elem.attrib.get("id") or hashlib.sha1(base_url.encode()).hexdigest()[:10]
+        bw = elem.attrib.get("bandwidth")
+        tbr = int(bw) / 1000.0 if (bw and bw.isdigit()) else None
+        fb_len = elem.attrib.get("FBContentLength")
+        filesize = int(fb_len) if (fb_len and fb_len.isdigit() and int(fb_len) > 0) else None
+        codecs = elem.attrib.get("codecs") or ""
+
+        if mime.startswith("video/"):
+            w = elem.attrib.get("width")
+            h = elem.attrib.get("height")
+            width = int(w) if (w and w.isdigit()) else None
+            height = int(h) if (h and h.isdigit()) else None
+            fb_label = elem.attrib.get("FBQualityLabel")
+            if not fb_label and width and height:
+                fb_label = f"{min(width, height)}p"
+            formats.append({
+                "format_id": fmt_id,
+                "url": base_url,
+                "ext": "mp4",
+                "protocol": "https",
+                "vcodec": codecs or "avc1",
+                "acodec": "none",
+                "width": width,
+                "height": height,
+                "tbr": tbr,
+                "format_note": fb_label,
+                "filesize": filesize,
+                "http_headers": dict(_THREADS_MEDIA_HEADERS),
+            })
+        elif mime.startswith("audio/"):
+            formats.append({
+                "format_id": fmt_id,
+                "url": base_url,
+                "ext": "m4a",
+                "protocol": "https",
+                "vcodec": "none",
+                "acodec": codecs or "mp4a.40.5",
+                "tbr": tbr,
+                "filesize": filesize,
+                "http_headers": dict(_THREADS_MEDIA_HEADERS),
+            })
+    return formats
+
+
+def _extract_threads_media(url):
+    """Extract video (and fallback image) info directly from Threads HTML."""
+
+    if detect_platform(url) != "Threads":
+        return None
+
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme != "https" or not parsed.hostname:
+            return None
+        req = urllib.request.Request(url, headers=dict(_THREADS_HEADERS))
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            final_url = resp.geturl()
+            final_parsed = urlparse(final_url)
+            if (
+                final_parsed.scheme != "https"
+                or detect_platform(final_url) != "Threads"
+            ):
+                return None
+            ctype = (resp.headers.get("Content-Type") or "").lower()
+            if "html" not in ctype:
+                return None
+            body = resp.read(3 * 1024 * 1024).decode("utf-8", errors="replace")
+    except Exception:
+        return None
+
+    meta = {}
+    for match in _OG_TAG_RE.finditer(body):
+        key = (match.group(1) or match.group(4) or "").lower()
+        val = html.unescape(match.group(2) or match.group(3) or "").strip()
+        if key and val and key not in meta:
+            meta[key] = val
+
+    sc_match = re.search(r"/post/([A-Za-z0-9_-]+)", final_url)
+    shortcode = sc_match.group(1) if sc_match else None
+
+    search_windows = []
+    if shortcode:
+        for m in re.finditer(rf'"code"\s*:\s*"{re.escape(shortcode)}"', body):
+            start = max(0, m.start() - 15000)
+            end = min(len(body), m.end() + 15000)
+            search_windows.append(body[start:end])
+    search_windows.append(body)
+
+    formats = []
+    seen_urls = set()
+    orig_w, orig_h = None, None
+
+    for window in search_windows:
+        if not orig_w or not orig_h:
+            for dim_name, dim_val in _THREADS_DIMS_RE.findall(window):
+                if dim_name == "width" and orig_w is None:
+                    orig_w = int(dim_val)
+                elif dim_name == "height" and orig_h is None:
+                    orig_h = int(dim_val)
+
+    for window in search_windows:
+        for dm in _THREADS_DASH_RE.finditer(window):
+            xml_text = _decode_json_str(dm.group(1))
+            dash_fmts = _parse_threads_dash_manifest(xml_text)
+            if dash_fmts:
+                for f in dash_fmts:
+                    if f["url"] not in seen_urls:
+                        seen_urls.add(f["url"])
+                        formats.append(f)
+                break
+        if formats:
+            break
+
+    if not formats:
+        for window in search_windows:
+            for vm in _THREADS_VIDEO_VERSIONS_RE.finditer(window):
+                try:
+                    versions = json.loads(vm.group(1))
+                except Exception:
+                    continue
+                if isinstance(versions, list):
+                    for idx, item in enumerate(versions):
+                        if not isinstance(item, dict):
+                            continue
+                        v_url = item.get("url")
+                        if (
+                            isinstance(v_url, str)
+                            and v_url.startswith("https://")
+                            and "rsrc.php" not in v_url.lower()
+                            and v_url not in seen_urls
+                        ):
+                            seen_urls.add(v_url)
+                            vw = item.get("width") or orig_w
+                            vh = item.get("height") or orig_h
+                            note = f"{min(vw, vh)}p" if (vw and vh) else None
+                            formats.append({
+                                "format_id": f"threads-prog-{idx}",
+                                "url": v_url,
+                                "ext": "mp4",
+                                "protocol": "https",
+                                "vcodec": "h264",
+                                "acodec": "aac",
+                                "width": vw,
+                                "height": vh,
+                                "format_note": note,
+                                "http_headers": dict(_THREADS_MEDIA_HEADERS),
+                            })
+                    if formats:
+                        break
+            if formats:
+                break
+
+    if not formats:
+        og_video = (
+            meta.get("og:video:secure_url")
+            or meta.get("og:video")
+            or meta.get("twitter:player:stream")
+        )
+        direct_candidates = [og_video] if og_video else []
+        for vm in _THREADS_VIDEO_URL_RE.finditer(search_windows[0]):
+            direct_candidates.append(_decode_json_str(vm.group(1)))
+        for cand in direct_candidates:
+            if (
+                isinstance(cand, str)
+                and cand.startswith("https://")
+                and "rsrc.php" not in cand.lower()
+                and cand not in seen_urls
+            ):
+                seen_urls.add(cand)
+                vw = int(meta["og:video:width"]) if (meta.get("og:video:width") or "").isdigit() else orig_w
+                vh = int(meta["og:video:height"]) if (meta.get("og:video:height") or "").isdigit() else orig_h
+                formats.append({
+                    "format_id": "threads-direct",
+                    "url": cand,
+                    "ext": "mp4",
+                    "protocol": "https",
+                    "vcodec": "h264",
+                    "acodec": "aac",
+                    "width": vw,
+                    "height": vh or 720,
+                    "format_note": f"{min(vw, vh)}p" if (vw and vh) else "720p",
+                    "http_headers": dict(_THREADS_MEDIA_HEADERS),
+                })
+                break
+
+    # Ensure progressive fallback always exposes at least one quality tier when
+    # Threads omits dimensions and DASH manifest on that post.
+    has_video_stream = any(f.get("vcodec") not in (None, "none") for f in formats)
+    if has_video_stream and not any(resolution_label(f) for f in formats if f.get("vcodec") not in (None, "none")):
+        for f in formats:
+            if f.get("vcodec") not in (None, "none"):
+                f["height"] = 720
+                f["format_note"] = "720p"
+                break
+
+    img_url = meta.get("og:image:secure_url") or meta.get("og:image") or meta.get("twitter:image")
+    title = meta.get("og:description") or meta.get("og:title") or meta.get("twitter:title") or "Threads video"
+    author = meta.get("og:title") or "Threads"
+    media_id = shortcode or hashlib.sha1(url.encode("utf-8", errors="ignore")).hexdigest()[:11]
+
+    if formats and has_video_stream:
+        return {
+            "id": media_id,
+            "title": title,
+            "uploader": author,
+            "thumbnail": img_url,
+            "webpage_url": final_url,
+            "original_url": url,
+            "extractor": "threads",
+            "extractor_key": "Threads",
+            "ext": "mp4",
+            "formats": formats,
+        }
+
+    if img_url and img_url.startswith("https://"):
+        width = int(meta["og:image:width"]) if (meta.get("og:image:width") or "").isdigit() else None
+        height = int(meta["og:image:height"]) if (meta.get("og:image:height") or "").isdigit() else None
+        return _make_image_info(
+            img_url,
+            title=title,
+            channel="Threads",
+            media_id=media_id,
+            width=width,
+            height=height,
+        )
+
+    return None
+
+
 def _try_image_fallback(url):
     """Attempt to extract image post/file metadata when yt-dlp has no video."""
 
     direct = _probe_direct_image(url)
     if direct is not None:
         return direct
+
+    threads_info = _extract_threads_media(url)
+    if threads_info is not None:
+        return threads_info
 
     reddit_info = _extract_reddit_images(url)
     if reddit_info is not None:
@@ -566,7 +854,7 @@ def fetch_video_info(url):
 
     except Exception as error:
         err_text = str(error).lower()
-        if any(
+        if detect_platform(url) == "Threads" or any(
             token in err_text
             for token in (
                 "there is no video",
@@ -604,6 +892,10 @@ def fetch_video_info(url):
         )
 
     if not available_qualities(info):
+        if detect_platform(url) == "Threads":
+            threads_info = _extract_threads_media(url)
+            if threads_info is not None:
+                return threads_info
         img_url, width, height = best_image_details(info)
         if img_url:
             info["_zardit_media_kind"] = "image"
@@ -1255,7 +1547,7 @@ def _extract_reddit_images(url):
             json_url = f"https://{parsed.hostname}{clean_path}.json"
 
         req = urllib.request.Request(
-            json_url, headers={"User-Agent": "Zardit/1.2"}
+            json_url, headers={"User-Agent": f"Zardit/{APP_VERSION}"}
         )
         with urllib.request.urlopen(req, timeout=8) as resp:
             if urlparse(resp.geturl()).scheme != "https":
@@ -1465,12 +1757,39 @@ def _extract_facebook_images(url):
     return None
 
 
+def _is_deferred_video_entry(entry):
+    """True for flat/lazy playlist items that still need per-video extraction."""
+
+    if entry.get("_zardit_media_kind") == "image":
+        return False
+    if available_qualities(entry):
+        return True
+
+    ext = (entry.get("ext") or "").lower()
+    if ext in _DIRECT_IMAGE_EXTS or entry.get("vcodec") == "images":
+        return False
+
+    if entry.get("_type") in ("url", "url_transparent") or entry.get("ie_key"):
+        return True
+    if entry.get("duration"):
+        return True
+
+    entry_url = entry.get("url") or entry.get("webpage_url") or ""
+    if (
+        entry_url
+        and not _image_ext_from_url(entry_url)
+        and detect_platform(entry_url) == "YouTube"
+    ):
+        return True
+
+    return False
+
+
 def _normalize_playlist_entries(entries, playlist_title, source_url):
     """Ensure multi-photo and mixed carousel slides carry clean metadata & URLs."""
 
     for idx, entry in enumerate(entries, start=1):
-        has_video = bool(available_qualities(entry))
-        if not has_video:
+        if not _is_deferred_video_entry(entry):
             img_url, width, height = best_image_details(entry)
             if img_url:
                 entry["_zardit_media_kind"] = "image"
@@ -1560,63 +1879,24 @@ def is_image_only_info(info):
     return not available_qualities(info) and bool(best_image_url(info))
 
 
-def _estimate_image_size(source_ext, target_fmt, orig_size, width=None, height=None):
-    """Estimate output file size in bytes for an image format."""
-
-    if target_fmt == ORIGINAL_IMAGE or target_fmt == source_ext:
-        if orig_size:
-            return int(orig_size)
-        if width and height:
-            factor = 1.6 if source_ext == "png" else 0.25
-            return max(1024, int(width * height * factor))
-        return None
-
-    if orig_size:
-        if source_ext in ("png", "bmp", "gif"):
-            if target_fmt == "webp":
-                return max(1024, int(orig_size * 0.35))
-            if target_fmt == "jpg":
-                return max(1024, int(orig_size * 0.30))
-            return int(orig_size)
-
-        if target_fmt == "png":
-            if width and height:
-                return max(int(orig_size), int(width * height * 1.6))
-            return max(int(orig_size), int(orig_size * 4.5))
-        if target_fmt == "webp":
-            ratio = 0.78 if source_ext in ("jpg", "jpeg") else 0.90
-            return max(1024, int(orig_size * ratio))
-        if target_fmt == "jpg":
-            ratio = 1.15 if source_ext == "webp" else 1.0
-            return max(1024, int(orig_size * ratio))
-
-    if width and height:
-        factors = {"png": 1.6, "jpg": 0.25, "webp": 0.20}
-        return max(1024, int(width * height * factors.get(target_fmt, 0.3)))
-
-    return None
-
-
 def image_format_options(info=None):
-    """Return structured FormatOption objects for image downloads."""
+    """Return structured FormatOption objects for image downloads (without size estimates)."""
 
     img_url = best_image_url(info)
-    source_ext = ((info or {}).get("ext") or _image_ext_from_url(img_url or "") or "jpg").lower()
-    if source_ext not in _DIRECT_IMAGE_EXTS:
+    url_ext = _image_ext_from_url(img_url or "") if img_url else None
+    info_ext = ((info or {}).get("ext") or "").lower()
+    if is_image_only_info(info) and info_ext in _DIRECT_IMAGE_EXTS:
+        source_ext = info_ext
+    elif url_ext in _DIRECT_IMAGE_EXTS:
+        source_ext = url_ext
+    elif info_ext in _DIRECT_IMAGE_EXTS:
+        source_ext = info_ext
+    else:
         source_ext = "jpg"
-
-    orig_size = None
-    width = (info or {}).get("width")
-    height = (info or {}).get("height")
-    if info:
-        orig_size = info.get("filesize") or info.get("filesize_approx")
-        if not orig_size and img_url:
-            orig_size = _probe_stream_size({"url": img_url, "protocol": "https"}, {})
 
     options = []
     for fmt in IMAGE_FORMATS:
         badge, details = _IMAGE_FORMAT_META.get(fmt, ("", "Image"))
-        size = _estimate_image_size(source_ext, fmt, orig_size, width, height)
         if fmt == ORIGINAL_IMAGE:
             label = f"Original ({source_ext.upper()})"
             details = f"{source_ext.upper()} · Native resolution (no conversion)"
@@ -1629,7 +1909,7 @@ def image_format_options(info=None):
                 label=label,
                 badge=badge,
                 details=details,
-                size=size,
+                size=None,
             )
         )
 
@@ -2057,11 +2337,25 @@ def _download(
 
         selected = select_formats(info, plan["selection"])
         active_selection = plan["selection"]
+        active_options = plan["options"]
         if kind == "video" and selected is None and not ceiling:
             fallback_selection = video_selection(setting, ceiling=True)
             selected = select_formats(info, fallback_selection)
             if selected is not None:
                 active_selection = fallback_selection
+        elif kind == "audio" and setting == ORIGINAL_AUDIO and selected is None:
+            fallback_selection = {"format": "bestaudio/best"}
+            selected = select_formats(info, fallback_selection)
+            if selected is not None:
+                active_selection = fallback_selection
+                if (selected.get("ext") or "").lower() != "m4a":
+                    active_options = {
+                        **plan["options"],
+                        "postprocessors": [
+                            {"key": "FFmpegExtractAudio", "preferredcodec": "m4a"},
+                            *plan["options"]["postprocessors"],
+                        ],
+                    }
 
         expected = _streams_size(selected) if selected else None
         _check_disk_space(folder, expected, kind)
@@ -2085,7 +2379,7 @@ def _download(
             "progress_hooks": [tracker],
             "postprocessor_hooks": [_postprocessor_hook(reporter)],
         }
-        options.update(plan["options"])
+        options.update(active_options)
 
         started = time.monotonic()
 

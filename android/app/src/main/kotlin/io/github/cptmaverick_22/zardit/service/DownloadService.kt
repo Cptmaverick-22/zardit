@@ -71,6 +71,7 @@ class DownloadService : Service() {
                 val batchTitles = intent.getStringArrayListExtra(EXTRA_BATCH_TITLES).orEmpty()
                 val batchIds = intent.getStringArrayListExtra(EXTRA_BATCH_IDS).orEmpty()
                 val directVideoUrl = intent.getStringExtra(EXTRA_DIRECT_VIDEO_URL)
+                val directAudioUrl = intent.getStringExtra(EXTRA_DIRECT_AUDIO_URL)
                 val useInstagramCookies = intent.getBooleanExtra(EXTRA_USE_IG_COOKIES, false)
                 val customTitle = intent.getStringExtra(EXTRA_CUSTOM_TITLE)
                 val formatId = intent.getStringExtra(EXTRA_FORMAT_ID)
@@ -90,6 +91,7 @@ class DownloadService : Service() {
                     batchTitles = batchTitles,
                     batchIds = batchIds,
                     directVideoUrl = directVideoUrl,
+                    directAudioUrl = directAudioUrl,
                     useInstagramCookies = useInstagramCookies,
                     customTitle = customTitle,
                     formatId = formatId,
@@ -114,6 +116,7 @@ class DownloadService : Service() {
         batchTitles: List<String>,
         batchIds: List<String>,
         directVideoUrl: String?,
+        directAudioUrl: String?,
         useInstagramCookies: Boolean,
         customTitle: String?,
         formatId: String?,
@@ -285,6 +288,7 @@ class DownloadService : Service() {
                     treeUri = treeUri,
                     processId = pid,
                     directVideoUrl = directVideoUrl,
+                    directAudioUrl = directAudioUrl,
                     useInstagramCookies = useInstagramCookies,
                     customTitle = customTitle,
                     formatId = formatId,
@@ -447,6 +451,7 @@ class DownloadService : Service() {
         private const val EXTRA_BATCH_TITLES = "extra_batch_titles"
         private const val EXTRA_BATCH_IDS = "extra_batch_ids"
         private const val EXTRA_DIRECT_VIDEO_URL = "extra_direct_video_url"
+        private const val EXTRA_DIRECT_AUDIO_URL = "extra_direct_audio_url"
         private const val EXTRA_USE_IG_COOKIES = "extra_use_ig_cookies"
         private const val EXTRA_CUSTOM_TITLE = "extra_custom_title"
         private const val EXTRA_FORMAT_ID = "extra_format_id"
@@ -476,6 +481,7 @@ class DownloadService : Service() {
             batchTitles: List<String> = emptyList(),
             batchIds: List<String> = emptyList(),
             directVideoUrl: String? = null,
+            directAudioUrl: String? = null,
             useInstagramCookies: Boolean = false,
             customTitle: String? = null,
             formatId: String? = null,
@@ -496,6 +502,7 @@ class DownloadService : Service() {
                 putStringArrayListExtra(EXTRA_BATCH_TITLES, ArrayList(batchTitles))
                 putStringArrayListExtra(EXTRA_BATCH_IDS, ArrayList(batchIds))
                 putExtra(EXTRA_DIRECT_VIDEO_URL, directVideoUrl)
+                putExtra(EXTRA_DIRECT_AUDIO_URL, directAudioUrl)
                 putExtra(EXTRA_USE_IG_COOKIES, useInstagramCookies)
                 putExtra(EXTRA_CUSTOM_TITLE, customTitle)
                 putExtra(EXTRA_FORMAT_ID, formatId)

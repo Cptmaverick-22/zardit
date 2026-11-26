@@ -1,7 +1,7 @@
 ; Inno Setup script for Zardit (Windows x64)
 
 #ifndef MyAppVersion
-  #define MyAppVersion "1.2"
+  #define MyAppVersion "1.2.1"
 #endif
 
 [Setup]
@@ -41,8 +41,8 @@ Source: "..\..\dist\Zardit\*"; DestDir: "{app}"; Flags: ignoreversion recursesub
 Source: "..\..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{autoprograms}\Zardit"; Filename: "{app}\Zardit.exe"; Comment: "Blaze through videos, audio & playlists across every platform"
-Name: "{autodesktop}\Zardit"; Filename: "{app}\Zardit.exe"; Tasks: desktopicon; Comment: "Blaze through videos, audio & playlists across every platform"
+Name: "{autoprograms}\Zardit"; Filename: "{app}\Zardit.exe"; IconFilename: "{app}\Zardit.exe"; IconIndex: 0; Comment: "Blaze through videos, audio & playlists across every platform"
+Name: "{autodesktop}\Zardit"; Filename: "{app}\Zardit.exe"; IconFilename: "{app}\Zardit.exe"; IconIndex: 0; Tasks: desktopicon; Comment: "Blaze through videos, audio & playlists across every platform"
 
 [Registry]
 Root: HKA; Subkey: "Environment"; ValueType: expandsz; ValueName: "Path"; ValueData: "{olddata};{app}"; Tasks: addtopath; Check: NeedsAddPath(ExpandConstant('{app}'))

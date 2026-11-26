@@ -14,6 +14,7 @@ from PySide6.QtCore import QObject, QSize, Qt, QThread, QUrl, Signal
 from PySide6.QtGui import (
     QColor,
     QDesktopServices,
+    QFont,
     QIcon,
     QKeySequence,
     QPainter,
@@ -358,18 +359,96 @@ def resource_path(relative):
 
 
 def load_app_icon():
-    """Return the Zardit QIcon if bundled assets are available."""
+    """Return a multi-resolution Zardit QIcon for window titlebars and taskbars."""
+
+    png_path = resource_path("assets/zardit.png")
+    if png_path.is_file():
+        source = QPixmap(str(png_path))
+        if not source.isNull():
+            icon = QIcon()
+            for size in (16, 20, 24, 32, 40, 48, 64, 128, 256):
+                icon.addPixmap(
+                    source.scaled(
+                        size,
+                        size,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                )
+            if not icon.isNull():
+                return icon
 
     candidates = (
-        ("assets/zardit.ico", "assets/zardit.png", "assets/zardit.svg")
+        ("assets/zardit.ico", "assets/zardit.svg")
         if sys.platform == "win32"
-        else ("assets/zardit.png", "assets/zardit.svg", "assets/zardit.ico")
+        else ("assets/zardit.svg", "assets/zardit.ico")
     )
     for candidate in candidates:
         path = resource_path(candidate)
         if path.is_file():
-            return QIcon(str(path))
+            icon = QIcon(str(path))
+            if not icon.isNull():
+                return icon
     return QIcon()
+
+
+def _apply_windows_taskbar_icon(widget):
+    """Ensure Windows 10/11 receives explicit native ICON_BIG and ICON_SMALL handles."""
+
+    if sys.platform != "win32" or getattr(widget, "_win_icons_applied", False):
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        hwnd = int(widget.winId())
+        if not hwnd:
+            return
+
+        user32 = ctypes.windll.user32
+        big_w = user32.GetSystemMetrics(11) or 32
+        big_h = user32.GetSystemMetrics(12) or 32
+        small_w = user32.GetSystemMetrics(49) or 16
+        small_h = user32.GetSystemMetrics(50) or 16
+
+        h_big = None
+        h_small = None
+        ico_path = resource_path("assets/zardit.ico")
+        if ico_path.is_file():
+            user32.LoadImageW.restype = wintypes.HANDLE
+            user32.LoadImageW.argtypes = [
+                wintypes.HINSTANCE,
+                wintypes.LPCWSTR,
+                wintypes.UINT,
+                ctypes.c_int,
+                ctypes.c_int,
+                wintypes.UINT,
+            ]
+            h_big = user32.LoadImageW(None, str(ico_path), 1, big_w, big_h, 0x0010)
+            h_small = user32.LoadImageW(None, str(ico_path), 1, small_w, small_h, 0x0010)
+
+        if not h_big and getattr(sys, "frozen", False):
+            big_arr = (wintypes.HICON * 1)()
+            small_arr = (wintypes.HICON * 1)()
+            if ctypes.windll.shell32.ExtractIconExW(sys.executable, 0, big_arr, small_arr, 1) > 0:
+                h_big = big_arr[0]
+                h_small = small_arr[0]
+
+        if h_big:
+            user32.SendMessageW(hwnd, 0x0080, 1, h_big)
+            set_cls = getattr(user32, "SetClassLongPtrW", None)
+            if set_cls is not None:
+                set_cls(hwnd, -14, h_big)
+        if h_small:
+            user32.SendMessageW(hwnd, 0x0080, 0, h_small)
+            set_cls = getattr(user32, "SetClassLongPtrW", None)
+            if set_cls is not None:
+                set_cls(hwnd, -34, h_small)
+
+        widget._win_hicons = (h_big, h_small)
+        widget._win_icons_applied = True
+    except Exception:
+        pass
 
 
 def plain_label(text="", bold=False, wrap=True, object_name=None):
@@ -489,18 +568,17 @@ class FormatRowWidget(QWidget):
 
         layout.addLayout(text_col, 1)
 
-        size_text = (
-            f"~{format_file_size(option.size)}"
-            if option.size is not None
-            else "--"
-        )
-        self.size_label = plain_label(
-            size_text, wrap=False, object_name="formatSize"
-        )
-        self.size_label.setAlignment(
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-        )
-        layout.addWidget(self.size_label, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.size_label = None
+        if option.size is not None:
+            self.size_label = plain_label(
+                f"~{format_file_size(option.size)}",
+                wrap=False,
+                object_name="formatSize",
+            )
+            self.size_label.setAlignment(
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            )
+            layout.addWidget(self.size_label, 0, Qt.AlignmentFlag.AlignVCenter)
 
     def set_selected(self, selected):
         value = "true" if selected else "false"
@@ -1252,23 +1330,17 @@ class MainWindow(QWidget):
         kind_row = QHBoxLayout()
         kind_row.setSpacing(8)
         self.video_radio = QRadioButton("Video (MP4)")
-        self.video_radio.setObjectName("pillRadio")
-        self.video_radio.setSizePolicy(
-            QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed
-        )
-        self.video_radio.setCursor(Qt.CursorShape.PointingHandCursor)
         self.audio_radio = QRadioButton("Audio")
-        self.audio_radio.setObjectName("pillRadio")
-        self.audio_radio.setSizePolicy(
-            QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed
-        )
-        self.audio_radio.setCursor(Qt.CursorShape.PointingHandCursor)
         self.image_radio = QRadioButton("Image")
-        self.image_radio.setObjectName("pillRadio")
-        self.image_radio.setSizePolicy(
-            QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed
-        )
-        self.image_radio.setCursor(Qt.CursorShape.PointingHandCursor)
+        for btn in (self.video_radio, self.audio_radio, self.image_radio):
+            btn.setObjectName("pillRadio")
+            btn.setSizePolicy(
+                QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed
+            )
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            pill_font = btn.font()
+            pill_font.setWeight(QFont.Weight.DemiBold)
+            btn.setFont(pill_font)
         self.video_radio.setChecked(True)
 
         group = QButtonGroup(self)
@@ -1732,6 +1804,10 @@ class MainWindow(QWidget):
         if wide != self._is_wide:
             self._is_wide = wide
             self._layout_options_sections(wide)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        _apply_windows_taskbar_icon(self)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

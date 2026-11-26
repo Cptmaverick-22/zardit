@@ -474,7 +474,7 @@ def build_qt_stylesheet(theme_name):
         color: {c["text_secondary"]};
         border: 1px solid {c["border"]};
         border-radius: 8px;
-        padding: 7px 14px;
+        padding: 7px 16px;
         font-weight: 600;
         spacing: 8px;
     }}

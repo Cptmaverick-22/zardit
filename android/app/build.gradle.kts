@@ -10,8 +10,8 @@ android {
     applicationId = "io.github.cptmaverick_22.zardit"
     minSdk = 24
     targetSdk = 36
-    versionCode = 2
-    versionName = "1.2"
+    versionCode = 3
+    versionName = "1.2.1"
   }
 
   buildTypes {
@@ -75,10 +75,12 @@ dependencies {
   implementation(libs.androidx.compose.material3)
   implementation(libs.androidx.compose.material.icons.extended)
 
-  // Zardit core: yt-dlp + thumbnails + SAF (lightweight: no bundled FFmpeg)
+  // Zardit core: yt-dlp + thumbnails + SAF + Media3 pure-Java MP4 muxing (no bundled FFmpeg)
   implementation(libs.youtubedl.library)
   implementation(libs.coil.compose)
   implementation(libs.androidx.documentfile)
+  implementation(libs.androidx.media3.muxer)
+  implementation(libs.androidx.media3.extractor)
   // Tooling
   debugImplementation(libs.androidx.compose.ui.tooling)
   // Instrumented tests

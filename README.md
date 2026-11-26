@@ -84,7 +84,7 @@ chmod +x Zardit-*-x86_64.AppImage
 - Print diagnostics: `./Zardit-*-x86_64.AppImage --diagnostics`
 - Install app-menu icon & `zardit` / `zardit-cli` commands locally:
   ```bash
-  ./packaging/linux/install_local.sh ~/Applications/Zardit-1.2-x86_64.AppImage
+  ./packaging/linux/install_local.sh ~/Applications/Zardit-1.2.1-x86_64.AppImage
   ```
   *(Run `./packaging/linux/install_local.sh` without arguments to create desktop/CLI launchers backed by your local `.venv`.)*
 
@@ -103,7 +103,7 @@ Download `Zardit-<version>-android-arm64.apk` from [GitHub Releases](https://git
 2. Grant notification permission when asked (used for background foreground-service progress notifications).
 3. Verify `SHA256SUMS.txt` if desired before installing.
 
-> **Note:** Android releases target `arm64-v8a` devices and ship a lightweight build using Android's native `MediaMuxer` without bundling FFmpeg.
+> **Note:** Android releases target `arm64-v8a` devices and ship a lightweight build using pure-Java Jetpack Media3 `Mp4Muxer` + Android `MediaMuxer` without bundling FFmpeg.
 
 ---
 
@@ -203,7 +203,7 @@ python zardit_app.py
 Start it with `zardit-cli`, `./Zardit-*-x86_64.AppImage --cli`, or `python main.py`:
 
 ```text
-  ╭─ ▶ Zardit v1.2 ────────────────────────────────────────────────────────────╮
+  ╭─ ▶ Zardit v1.2.1 ──────────────────────────────────────────────────────────╮
   │                                                                            │
   │  Tagline  Blaze through videos, audio & playlists across every platform.   │
   │  Save to  ~/Downloads/Zardit                                               │
@@ -246,8 +246,8 @@ Start it with `zardit-cli`, `./Zardit-*-x86_64.AppImage --cli`, or `python main.
 ## 🎞️ Quality and Formats
 
 - **Video (MP4):**
-  - **Desktop:** Resolutions from `144p` to `2160p` (whichever the source provides). Up to **1080p** prefers **H.264**; **1440p and 2160p** use **AV1** + FFmpeg muxing.
-  - **Android:** Prioritizes **H.264 + AAC** streams merged directly on-device with Android's native `MediaMuxer` so Shorts, ultrawide videos, Reels, Threads, and Facebook videos play reliably in standard Android gallery/video players without bundling FFmpeg.
+  - **Desktop:** Resolutions from `144p` to `2160p` (whichever the source provides). Up to **1080p** prefers **H.264**; **1440p and 2160p** use **AV1 / VP9** + FFmpeg muxing.
+  - **Android:** Supports **H.264, HEVC, VP9, and AV1** MP4 assembly directly on-device via Jetpack Media3 (`Mp4Muxer`) + Android `MediaMuxer` (unlocking 1080p/1440p+ YouTube, Instagram Reels, and Threads DASH streams without bundling FFmpeg).
 - **Audio:**
   - **Desktop:** **MP3** (`128`, `192`, `256`, `320 kbps`) with embedded cover art and metadata tags, or **Original audio** (`.m4a`).
   - **Android:** **Original audio** (`.m4a` / AAC) saved directly without transcoding.
@@ -399,10 +399,10 @@ This software is intended only for downloading content that you own, have permis
 
 ## 🗺️ Roadmap
 
-- **v1.3:** Optional on-demand minimal FFmpeg add-on for Android (MP3 conversion, Instagram high-res VP9/DASH, and 1440p+/AV1 streams without bloating the base APK), release-signed Android builds, and synced desktop + Android parity
+- Optional on-demand FFmpeg add-on for Android (MP3 transcoding) when needed
 - Faster playlists by preparing the next item while one downloads
 - Subtitles and time-range clip downloads
-- WebM / MKV format options for resolutions above 1080p
+- WebM / MKV format options for desktop downloads above 1080p
 
 ## License
 

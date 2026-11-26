@@ -16,6 +16,7 @@ lifecycleViewmodelNav3 = "2.10.0"
 youtubedlAndroid = "0.18.1"
 coil = "2.7.0"
 documentfile = "1.0.1"
+media3 = "1.9.0"
 
 [libraries]
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "androidxCore" }
@@ -42,6 +43,8 @@ androidx-lifecycle-viewmodel-navigation3 = { module = "androidx.lifecycle:lifecy
 youtubedl-library = { module = "io.github.junkfood02.youtubedl-android:library", version.ref = "youtubedlAndroid" }
 coil-compose = { module = "io.coil-kt:coil-compose", version.ref = "coil" }
 androidx-documentfile = { module = "androidx.documentfile:documentfile", version.ref = "documentfile" }
+androidx-media3-muxer = { module = "androidx.media3:media3-muxer", version.ref = "media3" }
+androidx-media3-extractor = { module = "androidx.media3:media3-extractor", version.ref = "media3" }
 androidx-compose-material-icons-extended = { group = "androidx.compose.material", name = "material-icons-extended" }
 
 [plugins]

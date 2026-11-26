@@ -443,29 +443,29 @@ class GuiInterfaceTests(unittest.TestCase):
             )
             self.assertEqual(dup.status, "exists")
 
-        # GUI Image mode & History Image filter
-        with mock.patch.object(
-            downloader.urllib.request,
-            "urlopen",
-            side_effect=lambda req, timeout=3: FakeImgResp(req.full_url),
-        ):
-            img_opts = downloader.image_format_options(img_info)
+        # Image format options must omit estimated sizes across all modes,
+        # including when given a video info dict with a large video filesize.
+        img_opts = downloader.image_format_options(img_info)
         self.assertEqual(len(img_opts), len(config.IMAGE_FORMATS))
         for opt in img_opts:
-            self.assertIsNotNone(opt.size, f"Missing estimated size for {opt.value}")
+            self.assertIsNone(opt.size, f"Unexpected estimated size for {opt.value}")
 
-        jpg_info = downloader._make_image_info(
-            "https://scontent.cdninstagram.com/photo.jpg",
-            ext="jpg",
-            size=200_000,
-            width=1080,
-            height=1350,
-        )
-        jpg_opts = {opt.value: opt for opt in downloader.image_format_options(jpg_info)}
-        self.assertEqual(jpg_opts["original"].size, 200_000)
-        self.assertEqual(jpg_opts["jpg"].size, 200_000)
-        self.assertGreater(jpg_opts["png"].size, 200_000)
-        self.assertLess(jpg_opts["webp"].size, 200_000)
+        yt_video_info = {
+            "id": "vj_2uNIQZ-A",
+            "title": "Sample Video",
+            "ext": "mp4",
+            "filesize": 804_400_000,
+            "width": 1920,
+            "height": 1080,
+            "thumbnail": "https://i.ytimg.com/vi/vj_2uNIQZ-A/maxresdefault.jpg",
+            "formats": [{"format_id": "137", "ext": "mp4", "height": 1080, "vcodec": "avc1"}],
+        }
+        yt_img_opts = {
+            opt.value: opt for opt in downloader.image_format_options(yt_video_info)
+        }
+        self.assertEqual(yt_img_opts["original"].label, "Original (JPG)")
+        for opt in yt_img_opts.values():
+            self.assertIsNone(opt.size)
 
         summary = downloader.summarize_video(img_info)
         self.window.url = "https://www.reddit.com/r/pics/comments/img123/"
@@ -650,6 +650,121 @@ class GuiInterfaceTests(unittest.TestCase):
         self.assertEqual(len(res["entries"]), 2)
         self.assertEqual(res["entries"][0]["width"], 1080)
         self.assertEqual(res["entries"][1]["height"], 1080)
+
+    def test_youtube_flat_playlist_stays_video_playlist_not_image_gallery(self):
+        flat_entries = [
+            {
+                "_type": "url",
+                "ie_key": "Youtube",
+                "id": "abcdefghijk",
+                "title": "Track One",
+                "url": "https://www.youtube.com/watch?v=abcdefghijk",
+                "duration": 136,
+                "thumbnails": [
+                    {
+                        "url": "https://i.ytimg.com/vi/abcdefghijk/hqdefault.jpg",
+                        "width": 336,
+                        "height": 188,
+                    }
+                ],
+            },
+            {
+                "_type": "url",
+                "ie_key": "Youtube",
+                "id": "lmnopqrstuv",
+                "title": "Track Two",
+                "url": "https://www.youtube.com/watch?v=lmnopqrstuv",
+                "duration": 180,
+                "thumbnails": [
+                    {
+                        "url": "https://i.ytimg.com/vi/lmnopqrstuv/hqdefault.jpg",
+                        "width": 336,
+                        "height": 188,
+                    }
+                ],
+            },
+        ]
+        downloader._normalize_playlist_entries(
+            flat_entries,
+            "small playlist",
+            "https://www.youtube.com/playlist?list=PL123456",
+        )
+        for item in flat_entries:
+            self.assertNotEqual(item.get("_zardit_media_kind"), "image")
+
+        playlist = SimpleNamespace(title="small playlist", entries=flat_entries)
+        self.window.url = "https://www.youtube.com/playlist?list=PL123456"
+        with mock.patch.object(
+            self.window.preview_loader, "fetch_batch"
+        ):
+            self.window.on_fetched(("playlist", playlist, None))
+
+        self.assertEqual(self.window.type_badge.text(), "YOUTUBE · PLAYLIST")
+        self.assertEqual(self.window.meta_label.text(), "Playlist  ·  2 videos")
+        self.assertTrue(self.window.video_radio.isEnabled())
+        self.assertTrue(self.window.audio_radio.isEnabled())
+        self.assertTrue(self.window.image_radio.isEnabled())
+
+    def test_threads_share_extracts_dash_video_and_audio_formats(self):
+        mpd_xml = (
+            '<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"><Period>'
+            '<AdaptationSet contentType="video">'
+            '<Representation id="v720" mimeType="video/mp4" codecs="avc1.64001f" '
+            'width="720" height="1280" bandwidth="1200000" FBContentLength="3200000" FBQualityLabel="720p">'
+            '<BaseURL>https://scontent.cdninstagram.com/threads_720.mp4</BaseURL>'
+            '</Representation></AdaptationSet>'
+            '<AdaptationSet contentType="audio">'
+            '<Representation id="a1" mimeType="audio/mp4" codecs="mp4a.40.5" '
+            'bandwidth="64000" FBContentLength="170000">'
+            '<BaseURL>https://scontent.cdninstagram.com/threads_audio.m4a</BaseURL>'
+            '</Representation></AdaptationSet>'
+            '</Period></MPD>'
+        )
+        import json as _json
+
+        html_body = (
+            '<html><head>'
+            '<meta property="og:title" content="Outlook (@outlookindia) on Threads">'
+            '<meta property="og:image" content="https://scontent.cdninstagram.com/thumb.jpg">'
+            '</head><body><script>'
+            + _json.dumps({
+                "code": "DgKWddoj2TI",
+                "video_dash_manifest": mpd_xml,
+                "video_versions": [
+                    {"type": 101, "url": "https://scontent.cdninstagram.com/threads_prog.mp4"}
+                ],
+            })
+            + '</script></body></html>'
+        ).encode("utf-8")
+
+        class FakeThreadsResp:
+            headers = {"Content-Type": "text/html; charset=utf-8"}
+
+            def geturl(self):
+                return "https://www.threads.com/@outlookindia/post/DgKWddoj2TI"
+
+            def read(self, _n=-1):
+                return html_body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        with mock.patch.object(
+            downloader.urllib.request, "urlopen", return_value=FakeThreadsResp()
+        ):
+            info = downloader._extract_threads_media("https://www.threads.com/share/Fm32n67jx")
+
+        self.assertIsNotNone(info)
+        self.assertFalse(downloader.is_image_only_info(info))
+        self.assertEqual(downloader.available_qualities(info), [720])
+        vid_opts = downloader.video_format_options(info)
+        self.assertEqual(vid_opts[0].value, 720)
+        self.assertEqual(vid_opts[0].size, 3370000)
+        audio_opts = downloader.audio_format_options(info)
+        self.assertEqual(audio_opts[-1].size, 170000)
 
 
 class TerminalUiTests(unittest.TestCase):

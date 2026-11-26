@@ -32,6 +32,7 @@ data class VideoOption(
     val approxSizeBytes: Long?,
     val formatId: String? = null,
     val needsAudioMux: Boolean = false,
+    val directUrl: String? = null,
 )
 
 data class AudioOption(
@@ -66,6 +67,7 @@ data class MediaPreview(
     val isPlaylist: Boolean = false,
     val playlistEntries: List<PlaylistEntry> = emptyList(),
     val directVideoUrl: String? = null,
+    val directAudioUrl: String? = null,
     val usedInstagramAuth: Boolean = false,
     val sanitizedTitle: String = title,
 )
