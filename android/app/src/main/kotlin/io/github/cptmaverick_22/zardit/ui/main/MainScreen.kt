@@ -103,6 +103,7 @@ fun MainScreen(
     var showIgLogin by remember { mutableStateOf(false) }
     var showIgDisconnect by remember { mutableStateOf(false) }
     var pendingDeleteItem by remember { mutableStateOf<HistoryItem?>(null) }
+    var showClearAllConfirm by remember { mutableStateOf(false) }
 
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
@@ -917,7 +918,7 @@ fun MainScreen(
                     }
                 },
                 onRemove = { item -> pendingDeleteItem = item },
-                onClearAll = viewModel::clearHistory,
+                onClearAll = { showClearAllConfirm = true },
                 modifier = Modifier.weight(1f),
             )
         }
@@ -991,6 +992,63 @@ fun MainScreen(
                         },
                     ) {
                         Text("History only")
+                    }
+                }
+            },
+        )
+    }
+
+    if (showClearAllConfirm) {
+        val hasSavedFiles = ui.history.any { it.contentUri != null }
+        AlertDialog(
+            onDismissRequest = { showClearAllConfirm = false },
+            title = { Text("Clear all history?") },
+            text = {
+                Text(
+                    if (hasSavedFiles) {
+                        "Clear all ${ui.history.size} item(s) from History only, or also delete the saved files from your device?"
+                    } else {
+                        "Remove all ${ui.history.size} item(s) from History?"
+                    },
+                )
+            },
+            confirmButton = {
+                if (hasSavedFiles) {
+                    Button(
+                        onClick = {
+                            showClearAllConfirm = false
+                            viewModel.clearHistory(deleteFiles = true)
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                    ) {
+                        Text("Delete files too")
+                    }
+                } else {
+                    Button(
+                        onClick = {
+                            showClearAllConfirm = false
+                            viewModel.clearHistory(deleteFiles = false)
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                    ) {
+                        Text("Clear history")
+                    }
+                }
+            },
+            dismissButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = { showClearAllConfirm = false }) {
+                        Text("Cancel")
+                    }
+                    if (hasSavedFiles) {
+                        TextButton(
+                            onClick = {
+                                showClearAllConfirm = false
+                                viewModel.clearHistory(deleteFiles = false)
+                            },
+                        ) {
+                            Text("History only")
+                        }
                     }
                 }
             },

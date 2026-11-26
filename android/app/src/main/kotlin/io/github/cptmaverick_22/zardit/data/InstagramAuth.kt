@@ -63,6 +63,39 @@ object InstagramAuth {
         }
     }
 
+    fun getCookieMap(context: Context): Map<String, String> {
+        val file = File(context.applicationContext.filesDir, SESSION_FILE)
+        if (!file.isFile) return emptyMap()
+        return runCatching {
+            val allBytes = file.readBytes()
+            if (allBytes.size <= GCM_IV_LEN) return emptyMap()
+            val iv = allBytes.copyOfRange(0, GCM_IV_LEN)
+            val ciphertext = allBytes.copyOfRange(GCM_IV_LEN, allBytes.size)
+            val cipher = Cipher.getInstance(TRANSFORMATION)
+            cipher.init(Cipher.DECRYPT_MODE, getOrCreateSecretKey(), GCMParameterSpec(GCM_TAG_BITS, iv))
+            val plaintext = cipher.doFinal(ciphertext)
+            try {
+                val map = linkedMapOf<String, String>()
+                plaintext.toString(Charsets.UTF_8).lineSequence().forEach { line ->
+                    if (line.startsWith("#") || line.isBlank()) return@forEach
+                    val cols = line.split("\t")
+                    if (cols.size >= 7 && cols[5] in allowedCookieNames && cols[6].isNotBlank()) {
+                        map[cols[5]] = cols[6]
+                    }
+                }
+                map
+            } finally {
+                plaintext.fill(0)
+            }
+        }.getOrDefault(emptyMap())
+    }
+
+    fun getCookieHeader(context: Context): String? {
+        val map = getCookieMap(context)
+        if ("sessionid" !in map) return null
+        return map.entries.joinToString("; ") { "${it.key}=${it.value}" }
+    }
+
     fun <T> withTempCookieFile(context: Context, block: (File) -> T): T {
         val file = File(context.applicationContext.filesDir, SESSION_FILE)
         require(file.isFile) { "No Instagram session saved." }

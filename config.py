@@ -15,8 +15,19 @@ log = logging.getLogger("zardit")
 APP_NAME = "Zardit"
 APP_SLUG = "zardit"
 APP_TAGLINE = "Blaze through videos, audio & playlists across every platform."
-APP_VERSION = "1.2.1"   # The only place the version is set.
+APP_VERSION = "1.3"   # The only place the version is set.
 APP_LICENSE = "GPL-3.0-or-later"
+
+IG_BROWSERS = ("chrome", "firefox", "edge", "brave", "chromium", "opera", "vivaldi")
+IG_BROWSER_LABELS = {
+    "chrome": "Google Chrome",
+    "firefox": "Mozilla Firefox",
+    "edge": "Microsoft Edge",
+    "brave": "Brave",
+    "chromium": "Chromium",
+    "opera": "Opera",
+    "vivaldi": "Vivaldi",
+}
 
 AUDIO_BITRATES = [128, 192, 256, 320]
 ORIGINAL_AUDIO = "original"     # Source audio saved as it is, no conversion
@@ -143,6 +154,27 @@ def remember_setting(key, value):
         save_setting(key, value)
     except OSError:
         pass
+
+
+def get_ig_browser():
+    """Return the configured browser name for local Instagram cookies, or None."""
+
+    value = load_settings().get("ig_browser")
+    if isinstance(value, str):
+        norm = value.strip().lower()
+        if norm in IG_BROWSERS:
+            return norm
+    return None
+
+
+def save_ig_browser(browser):
+    """Save or clear the local browser used for Instagram cookies."""
+
+    norm = str(browser or "").strip().lower()
+    if norm not in IG_BROWSERS:
+        norm = None
+    save_setting("ig_browser", norm)
+    return norm
 
 # --------------------------------------------------------------------------
 # Download folder

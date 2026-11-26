@@ -7,8 +7,14 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
 import android.provider.MediaStore
 import android.text.Html
+import android.webkit.CookieManager
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import androidx.documentfile.provider.DocumentFile
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
@@ -17,7 +23,10 @@ import io.github.cptmaverick_22.zardit.data.InstagramAuth
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLDecoder
 import java.util.Locale
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -50,7 +59,7 @@ object ZarditEngine {
         require(rawUrl.startsWith("http://") || rawUrl.startsWith("https://")) {
             "Enter a valid http/https link."
         }
-        val cleanUrl = normalizeAndResolveUrl(rawUrl)
+        val cleanUrl = normalizeAndResolveUrl(rawUrl, context)
         DiagnosticLog.log("Fetch", "URL resolved: $cleanUrl")
 
         if (isPlaylistUrl(cleanUrl)) {
@@ -72,18 +81,19 @@ object ZarditEngine {
             }
 
             if (isIg) {
-                if (isNoVideo) {
-                    if (InstagramAuth.hasSession(context)) {
-                        fetchInstagramApiWithCookies(context, cleanUrl)?.let { return it }
+                val hasIg = InstagramAuth.hasSession(context)
+                if (hasIg) {
+                    if (!isNoVideo) {
+                        fetchWithInstagramCookies(context, cleanUrl)?.let { return it }
                     }
-                    fetchImageFallback(context, cleanUrl, useIgCookies = false)?.let { return it }
-                }
-                if (InstagramAuth.hasSession(context)) {
+                    fetchInstagramApiWithCookies(context, cleanUrl)?.let { return it }
                     if (isNoVideo) {
                         fetchImageFallback(context, cleanUrl, useIgCookies = true)?.let { return it }
                     }
-                    fetchWithInstagramCookies(context, cleanUrl)?.let { return it }
-                    fetchInstagramApiWithCookies(context, cleanUrl)?.let { return it }
+                    fetchInstagramViaWebView(context, cleanUrl)?.let { return it }
+                }
+                if (isNoVideo) {
+                    fetchImageFallback(context, cleanUrl, useIgCookies = false)?.let { return it }
                 }
                 fetchInstagramEmbedFallback(cleanUrl)?.let { return it }
             } else if (isNoVideo) {
@@ -301,26 +311,50 @@ object ZarditEngine {
         return height
     }
 
-    private fun normalizeAndResolveUrl(url: String): String {
+    private fun normalizeAndResolveUrl(url: String, context: Context? = null): String {
         var current = url
         val lower = current.lowercase(Locale.US)
-        if (("threads.com" in lower || "threads.net" in lower) && "/share/" in lower) {
+        val isThreadsShare = ("threads.com" in lower || "threads.net" in lower) && "/share/" in lower
+        val isIgShare = ("instagram.com" in lower || "instagr.am" in lower) && "/share/" in lower
+        if (isThreadsShare || isIgShare) {
             runCatching {
+                val igCookie = if (isIgShare && context != null && InstagramAuth.hasSession(context)) {
+                    InstagramAuth.getCookieHeader(context)
+                } else {
+                    null
+                }
                 var hop = current
-                repeat(4) {
-                    val conn = (URL(hop).openConnection() as HttpURLConnection).apply {
+                repeat(5) {
+                    val hopUrl = URL(hop)
+                    val conn = (hopUrl.openConnection() as HttpURLConnection).apply {
                         requestMethod = "GET"
                         instanceFollowRedirects = false
                         connectTimeout = 5000
                         readTimeout = 5000
                         setRequestProperty("User-Agent", "curl/8.5.0")
                         setRequestProperty("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                        if (igCookie != null && hopUrl.host.lowercase(Locale.US).endsWith("instagram.com")) {
+                            setRequestProperty("Cookie", igCookie)
+                        }
                     }
                     val code = conn.responseCode
                     val loc = conn.getHeaderField("Location")
                     conn.disconnect()
                     if (code in 300..399 && !loc.isNullOrBlank()) {
-                        hop = if (loc.startsWith("http")) loc else URL(URL(hop), loc).toString()
+                        val nextUrl = if (loc.startsWith("http")) loc else URL(hopUrl, loc).toString()
+                        if ("/accounts/login" in nextUrl && "next=" in nextUrl) {
+                            val nextParam = Regex("""[?&]next=([^&]+)""").find(nextUrl)?.groupValues?.getOrNull(1)
+                            val decoded = nextParam?.let { URLDecoder.decode(it, "UTF-8") }
+                            if (!decoded.isNullOrBlank()) {
+                                val resolved = if (decoded.startsWith("http")) decoded else "https://www.instagram.com$decoded"
+                                if ("/p/" in resolved || "/reel/" in resolved || "/tv/" in resolved) {
+                                    hop = resolved
+                                    return@repeat
+                                }
+                            }
+                            return@repeat
+                        }
+                        hop = nextUrl
                     } else {
                         return@repeat
                     }
@@ -385,21 +419,344 @@ object ZarditEngine {
             .firstOrNull()
     }
 
+    private fun bestCandidateImage(candidates: JSONArray?): String? {
+        if (candidates == null) return null
+        var best: String? = null
+        var bestArea = -1
+        for (j in 0 until candidates.length()) {
+            val c = candidates.optJSONObject(j) ?: continue
+            val u = c.optString("url").takeIf { it.startsWith("http") } ?: continue
+            val area = c.optInt("width", 0) * c.optInt("height", 0)
+            if (area >= bestArea) {
+                bestArea = area
+                best = u
+            }
+        }
+        return best
+    }
+
+    private fun bestVideoVersionUrl(versions: JSONArray?): Pair<String, Int>? {
+        if (versions == null) return null
+        var bestUrl: String? = null
+        var bestArea = -1
+        var bestHeight = 0
+        for (i in 0 until versions.length()) {
+            val v = versions.optJSONObject(i) ?: continue
+            val u = v.optString("url").takeIf { it.startsWith("http") } ?: continue
+            val w = v.optInt("width", 0)
+            val h = v.optInt("height", 0)
+            val area = w * h
+            if (area >= bestArea) {
+                bestArea = area
+                bestUrl = u
+                bestHeight = if (w > 0 && h > 0) minOf(w, h) else h
+            }
+        }
+        return bestUrl?.let { it to bestHeight }
+    }
+
+    private fun parseInstagramJsonItem(
+        item: JSONObject,
+        shortcode: String,
+        url: String,
+        usedAuth: Boolean,
+    ): MediaPreview? {
+        val rawTitle = item.optJSONObject("caption")?.optString("text")?.ifBlank { null }
+            ?: item.optJSONObject("edge_media_to_caption")
+                ?.optJSONArray("edges")?.optJSONObject(0)
+                ?.optJSONObject("node")?.optString("text")?.ifBlank { null }
+            ?: "Instagram Post ($shortcode)"
+        val author = item.optJSONObject("user")?.optString("username")?.ifBlank { null }
+            ?: item.optJSONObject("owner")?.optString("username")?.ifBlank { null }
+            ?: "Instagram"
+        val durationSec = item.optDouble("video_duration", 0.0).toInt()
+        val thumbUrl = bestCandidateImage(item.optJSONObject("image_versions2")?.optJSONArray("candidates"))
+            ?: item.optString("display_url").takeIf { it.startsWith("http") }
+
+        val imageUrls = linkedSetOf<String>()
+        var firstCarouselVideo: JSONObject? = null
+        val carousel = item.optJSONArray("carousel_media")
+        if (carousel != null && carousel.length() > 0) {
+            for (i in 0 until carousel.length()) {
+                val slide = carousel.optJSONObject(i) ?: continue
+                val hasSlideVid = slide.optString("video_dash_manifest").contains("<Representation") ||
+                    (slide.optJSONArray("video_versions")?.length() ?: 0) > 0 ||
+                    slide.optString("video_url").startsWith("http")
+                if (hasSlideVid && firstCarouselVideo == null) {
+                    firstCarouselVideo = slide
+                }
+                val bestImg = bestCandidateImage(slide.optJSONObject("image_versions2")?.optJSONArray("candidates"))
+                    ?: slide.optString("display_url").takeIf { it.startsWith("http") }
+                if (bestImg != null && !hasSlideVid) {
+                    imageUrls.add(bestImg)
+                }
+            }
+        } else {
+            val sidecarEdges = item.optJSONObject("edge_sidecar_to_children")?.optJSONArray("edges")
+            if (sidecarEdges != null && sidecarEdges.length() > 0) {
+                for (i in 0 until sidecarEdges.length()) {
+                    val node = sidecarEdges.optJSONObject(i)?.optJSONObject("node") ?: continue
+                    val hasNodeVid = node.optBoolean("is_video", false) ||
+                        node.optString("video_url").startsWith("http")
+                    if (hasNodeVid && firstCarouselVideo == null) {
+                        firstCarouselVideo = node
+                    }
+                    val bestImg = node.optString("display_url").takeIf { it.startsWith("http") }
+                    if (bestImg != null && !hasNodeVid) {
+                        imageUrls.add(bestImg)
+                    }
+                }
+            }
+        }
+
+        val videoTarget = firstCarouselVideo ?: item
+        val dashManifest = videoTarget.optString("video_dash_manifest")
+            .takeIf { it.contains("<Representation") }
+        val videoVersions = videoTarget.optJSONArray("video_versions")
+        val graphqlVideoUrl = videoTarget.optString("video_url").takeIf { it.startsWith("http") }
+        val bestDirectVideo = bestVideoVersionUrl(videoVersions)
+            ?: graphqlVideoUrl?.let { it to 0 }
+
+        if ((dashManifest != null || bestDirectVideo != null) && imageUrls.isEmpty()) {
+            val slideThumb = bestCandidateImage(videoTarget.optJSONObject("image_versions2")?.optJSONArray("candidates"))
+                ?: videoTarget.optString("display_url").takeIf { it.startsWith("http") }
+                ?: thumbUrl
+            val parsedDash = dashManifest?.let { parseDashManifest(it) }
+            if (parsedDash != null && parsedDash.videoOptions.isNotEmpty()) {
+                return MediaPreview(
+                    mediaId = shortcode,
+                    url = url,
+                    title = rawTitle,
+                    author = author,
+                    platform = "INSTAGRAM · VIDEO",
+                    durationText = formatDuration(durationSec),
+                    thumbnailUrl = slideThumb,
+                    videoOptions = parsedDash.videoOptions,
+                    audioOptions = if (parsedDash.audioUrl != null) {
+                        listOf(AudioOption("orig_m4a", "Best Audio", "M4A / AAC · Native quality", null, isOriginal = true, approxSizeBytes = parsedDash.audioBytes))
+                    } else {
+                        emptyList()
+                    },
+                    directVideoUrl = parsedDash.videoOptions.first().directUrl,
+                    directAudioUrl = parsedDash.audioUrl,
+                    usedInstagramAuth = usedAuth,
+                    sanitizedTitle = sanitizeTitle(rawTitle, "Instagram_$shortcode"),
+                )
+            }
+            if (bestDirectVideo != null) {
+                val (vidUrl, vidTier) = bestDirectVideo
+                val size = probeUrlSize(vidUrl)
+                val optLabel = if (vidTier > 0) "${vidTier}p" else "Original"
+                val optBadge = if (vidTier > 0) qualityBadge(vidTier).ifEmpty { "HD" } else "HD"
+                return MediaPreview(
+                    mediaId = shortcode,
+                    url = url,
+                    title = rawTitle,
+                    author = author,
+                    platform = "INSTAGRAM · VIDEO",
+                    durationText = formatDuration(durationSec),
+                    thumbnailUrl = slideThumb,
+                    videoOptions = listOf(
+                        VideoOption(if (vidTier > 0) vidTier else 1080, optLabel, optBadge, "MP4 · Direct stream", size),
+                    ),
+                    audioOptions = defaultAudioOptions.map {
+                        it.copy(approxSizeBytes = size?.let { s -> (s / 5L).coerceAtLeast(80_000L) })
+                    },
+                    directVideoUrl = vidUrl,
+                    usedInstagramAuth = usedAuth,
+                    sanitizedTitle = sanitizeTitle(rawTitle, "Instagram_$shortcode"),
+                )
+            }
+        }
+
+        if (imageUrls.isEmpty() && thumbUrl != null) {
+            imageUrls.add(thumbUrl)
+        }
+        if (imageUrls.isNotEmpty()) {
+            val list = imageUrls.toList()
+            return MediaPreview(
+                mediaId = shortcode,
+                url = url,
+                title = rawTitle,
+                author = "$author · ${list.size} image${if (list.size == 1) "" else "s"}",
+                platform = "INSTAGRAM · IMAGE",
+                durationText = "${list.size} image${if (list.size == 1) "" else "s"}",
+                thumbnailUrl = list.first(),
+                videoOptions = emptyList(),
+                audioOptions = emptyList(),
+                imageUrls = list,
+                usedInstagramAuth = usedAuth,
+                sanitizedTitle = sanitizeTitle(rawTitle, "Instagram_$shortcode"),
+            )
+        }
+        return null
+    }
+
+    private fun fetchInstagramMediaInfoById(
+        cookieHeader: String,
+        mediaId: String,
+        shortcode: String,
+        url: String,
+    ): MediaPreview? = runCatching {
+        val infoUrl = "https://i.instagram.com/api/v1/media/$mediaId/info/"
+        val conn = (URL(infoUrl).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 8000
+            readTimeout = 8000
+            instanceFollowRedirects = true
+            setRequestProperty("Cookie", cookieHeader)
+            setRequestProperty("X-IG-App-ID", "936619743392459")
+            setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/125.0 Mobile Safari/537.36")
+            setRequestProperty("Accept", "application/json")
+        }
+        val code = conn.responseCode
+        val body = if (code in 200..299) conn.inputStream.bufferedReader().use { it.readText() } else ""
+        conn.disconnect()
+        DiagnosticLog.log("IGMediaInfo", "code=$code len=${body.length}")
+        if (body.isBlank() || !body.trimStart().startsWith("{")) return@runCatching null
+        val root = JSONObject(body)
+        val item = root.optJSONArray("items")?.optJSONObject(0) ?: return@runCatching null
+        parseInstagramJsonItem(item, shortcode, url, usedAuth = true)
+    }.getOrNull()
+
+    private fun extractInstagramFromHtml(
+        html: String,
+        shortcode: String,
+        url: String,
+        cookieHeader: String?,
+        usedAuth: Boolean,
+    ): MediaPreview? {
+        if (cookieHeader != null) {
+            val mediaId = Regex(""""(?:media_id|pk)"\s*:\s*"(\d{10,25})"""")
+                .find(html)?.groupValues?.getOrNull(1)
+                ?: Regex("""instagram://media\?id=(\d{10,25})""")
+                    .find(html)?.groupValues?.getOrNull(1)
+            if (!mediaId.isNullOrBlank()) {
+                fetchInstagramMediaInfoById(cookieHeader, mediaId, shortcode, url)?.let { return it }
+            }
+        }
+
+        val windows = buildList {
+            Regex(""""code"\s*:\s*"${Regex.escape(shortcode)}"""").findAll(html).forEach { m ->
+                val start = (m.range.first - 20_000).coerceAtLeast(0)
+                val end = (m.range.last + 20_000).coerceAtMost(html.length)
+                add(html.substring(start, end))
+            }
+            add(html)
+        }
+
+        val meta = mutableMapOf<String, String>()
+        ogTagRegex.findAll(html).forEach { m ->
+            val key = (m.groupValues[1].ifEmpty { m.groupValues[4] }).lowercase(Locale.US)
+            val valText = decodeHtml(m.groupValues[2].ifEmpty { m.groupValues[3] }).trim()
+            if (key.isNotEmpty() && valText.isNotEmpty() && key !in meta) {
+                meta[key] = valText
+            }
+        }
+        val title = decodeHtml(meta["og:description"] ?: meta["og:title"] ?: "Instagram Post ($shortcode)")
+        val dashRegex = Regex(""""video_dash_manifest"\s*:\s*"((?:\\.|[^"\\])*)"""")
+        val urlRegex = Regex(""""url"\s*:\s*"(https?:[^"]+)"""")
+
+        for (win in windows) {
+            dashRegex.findAll(win).forEach { dm ->
+                val xml = dm.groupValues[1].unescapeJsonUrl().replace("\\n", "\n")
+                val parsedDash = parseDashManifest(xml)
+                if (parsedDash != null && parsedDash.videoOptions.isNotEmpty()) {
+                    return MediaPreview(
+                        mediaId = shortcode,
+                        url = url,
+                        title = title,
+                        author = "Instagram",
+                        platform = "INSTAGRAM · VIDEO",
+                        durationText = "",
+                        thumbnailUrl = meta["og:image"],
+                        videoOptions = parsedDash.videoOptions,
+                        audioOptions = if (parsedDash.audioUrl != null) {
+                            listOf(AudioOption("orig_m4a", "Best Audio", "M4A / AAC · Native quality", null, isOriginal = true, approxSizeBytes = parsedDash.audioBytes))
+                        } else {
+                            emptyList()
+                        },
+                        directVideoUrl = parsedDash.videoOptions.first().directUrl,
+                        directAudioUrl = parsedDash.audioUrl,
+                        usedInstagramAuth = usedAuth,
+                        sanitizedTitle = sanitizeTitle(title, "Instagram_$shortcode"),
+                    )
+                }
+            }
+        }
+
+        val scoped = windows.first()
+        val videoVersionsBlockRegex = Regex(""""video_versions"\s*:\s*\[(.*?)\]""", RegexOption.DOT_MATCHES_ALL)
+        val versionsVid = videoVersionsBlockRegex.findAll(scoped)
+            .flatMap { m -> urlRegex.findAll(m.groupValues[1]).map { it.groupValues[1].unescapeJsonUrl() } }
+            .firstOrNull { it.startsWith("http") }
+        val videoUrl = versionsVid
+            ?: Regex(""""video_url"\s*:\s*"(https?:[^"]+)"""").find(scoped)?.groupValues?.getOrNull(1)?.unescapeJsonUrl()
+            ?: meta["og:video:secure_url"]?.takeIf { it.startsWith("http") }
+            ?: meta["og:video"]?.takeIf { it.startsWith("http") }
+        if (!videoUrl.isNullOrBlank()) {
+            val size = probeUrlSize(videoUrl)
+            return MediaPreview(
+                mediaId = shortcode,
+                url = url,
+                title = title,
+                author = "Instagram",
+                platform = "INSTAGRAM · VIDEO",
+                durationText = "",
+                thumbnailUrl = meta["og:image"],
+                videoOptions = listOf(VideoOption(1080, "Original", "HD", "MP4 · Direct stream", size)),
+                audioOptions = defaultAudioOptions.map {
+                    it.copy(approxSizeBytes = size?.let { s -> (s / 5L).coerceAtLeast(80_000L) })
+                },
+                directVideoUrl = videoUrl,
+                usedInstagramAuth = usedAuth,
+                sanitizedTitle = sanitizeTitle(title, "Instagram_$shortcode"),
+            )
+        }
+
+        val images = linkedSetOf<String>()
+        Regex(""""image_versions2"\s*:\s*\{\s*"candidates"\s*:\s*\[(.*?)\]""", RegexOption.DOT_MATCHES_ALL)
+            .findAll(scoped)
+            .forEach { block ->
+                urlRegex.find(block.groupValues[1])?.groupValues?.getOrNull(1)
+                    ?.unescapeJsonUrl()
+                    ?.takeIf { it.startsWith("http") && !croppedUrlRegex.containsMatchIn(it) }
+                    ?.let { images.add(it) }
+            }
+        if (images.isEmpty()) {
+            Regex(""""display_url"\s*:\s*"(https?:[^"]+)"""").findAll(scoped).forEach { m ->
+                val u = m.groupValues[1].unescapeJsonUrl()
+                if (u.startsWith("http") && !croppedUrlRegex.containsMatchIn(u)) images.add(u)
+            }
+        }
+        if (images.isEmpty()) {
+            meta["og:image"]?.takeIf { it.startsWith("http") && !croppedUrlRegex.containsMatchIn(it) }?.let { images.add(it) }
+        }
+        if (images.isNotEmpty()) {
+            val list = images.toList()
+            return MediaPreview(
+                mediaId = shortcode,
+                url = url,
+                title = title,
+                author = "Instagram · ${list.size} image${if (list.size == 1) "" else "s"}",
+                platform = "INSTAGRAM · IMAGE",
+                durationText = "${list.size} image${if (list.size == 1) "" else "s"}",
+                thumbnailUrl = list.first(),
+                videoOptions = emptyList(),
+                audioOptions = emptyList(),
+                imageUrls = list,
+                usedInstagramAuth = usedAuth,
+                sanitizedTitle = sanitizeTitle(title, "Instagram_$shortcode"),
+            )
+        }
+        return null
+    }
+
     private fun fetchInstagramApiWithCookies(context: Context, url: String): MediaPreview? {
         val shortcode = Regex("""instagram\.com/(?:reel|reels|p|tv)/([A-Za-z0-9_-]+)""")
             .find(url)?.groupValues?.getOrNull(1) ?: return null
 
         return runCatching {
-            val cookieHeader = InstagramAuth.withTempCookieFile(context) { cookieFile ->
-                cookieFile.readLines()
-                    .filter { !it.startsWith("#") && it.isNotBlank() }
-                    .mapNotNull { line ->
-                        val cols = line.split("\t")
-                        if (cols.size >= 7) "${cols[5]}=${cols[6]}" else null
-                    }
-                    .joinToString("; ")
-            }
-            if (cookieHeader.isBlank()) return@runCatching null
+            val cookieHeader = InstagramAuth.getCookieHeader(context) ?: return@runCatching null
 
             val apiUrl = "https://www.instagram.com/p/$shortcode/?__a=1&__d=dis"
             val conn = (URL(apiUrl).openConnection() as HttpURLConnection).apply {
@@ -411,129 +768,193 @@ object ZarditEngine {
                 setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/125.0 Mobile Safari/537.36")
                 setRequestProperty("Accept", "application/json")
             }
-            val body = conn.inputStream.bufferedReader().use { it.readText() }
+            val code = conn.responseCode
+            val body = if (code in 200..299) conn.inputStream.bufferedReader().use { it.readText() } else ""
             conn.disconnect()
-            DiagnosticLog.log("IGApi", "shortcode=$shortcode len=${body.length} isJson=${body.trimStart().startsWith("{")}")
-            if (body.isBlank() || !body.trimStart().startsWith("{")) return@runCatching null
-
-            val root = JSONObject(body)
-            val item = root.optJSONArray("items")?.optJSONObject(0)
-                ?: root.optJSONObject("graphql")?.optJSONObject("shortcode_media")
-                ?: return@runCatching null
-
-            val rawTitle = item.optJSONObject("caption")?.optString("text")
-                ?.ifBlank { null }
-                ?: "Instagram Post ($shortcode)"
-            val author = item.optJSONObject("user")?.optString("username")?.ifBlank { null }
-                ?: item.optJSONObject("owner")?.optString("username")?.ifBlank { null }
-                ?: "Instagram"
-
-            val imageUrls = linkedSetOf<String>()
-            val carousel = item.optJSONArray("carousel_media")
-            if (carousel != null && carousel.length() > 0) {
-                for (i in 0 until carousel.length()) {
-                    val slide = carousel.optJSONObject(i) ?: continue
-                    val bestImg = slide.optJSONObject("image_versions2")
-                        ?.optJSONArray("candidates")
-                        ?.let { candidates ->
-                            var best: String? = null
-                            var bestArea = -1
-                            for (j in 0 until candidates.length()) {
-                                val c = candidates.optJSONObject(j) ?: continue
-                                val u = c.optString("url").takeIf { it.startsWith("http") } ?: continue
-                                val area = c.optInt("width", 0) * c.optInt("height", 0)
-                                if (area >= bestArea) {
-                                    bestArea = area
-                                    best = u
-                                }
-                            }
-                            best
-                        }
-                    if (bestImg != null) imageUrls.add(bestImg)
+            DiagnosticLog.log("IGApi", "code=$code len=${body.length} isJson=${body.trimStart().startsWith("{")}")
+            if (body.isNotBlank() && body.trimStart().startsWith("{")) {
+                val root = JSONObject(body)
+                val item = root.optJSONArray("items")?.optJSONObject(0)
+                    ?: root.optJSONObject("graphql")?.optJSONObject("shortcode_media")
+                if (item != null) {
+                    parseInstagramJsonItem(item, shortcode, url, usedAuth = true)?.let { return@runCatching it }
                 }
             }
 
-            // Single image (if not a video)
-            val dashManifest = item.optString("video_dash_manifest").takeIf { it.contains("<Representation") }
-            val videoVersions = item.optJSONArray("video_versions")
-            if ((dashManifest != null || (videoVersions != null && videoVersions.length() > 0)) && imageUrls.isEmpty()) {
-                val thumbUrl = item.optJSONObject("image_versions2")
-                    ?.optJSONArray("candidates")?.optJSONObject(0)?.optString("url")
-                val parsedDash = dashManifest?.let { parseDashManifest(it) }
-                if (parsedDash != null && parsedDash.videoOptions.isNotEmpty()) {
-                    return@runCatching MediaPreview(
-                        mediaId = shortcode,
-                        url = url,
-                        title = rawTitle,
-                        author = author,
-                        platform = "INSTAGRAM · VIDEO",
-                        durationText = formatDuration(item.optDouble("video_duration", 0.0).toInt()),
-                        thumbnailUrl = thumbUrl,
-                        videoOptions = parsedDash.videoOptions,
-                        audioOptions = if (parsedDash.audioUrl != null) {
-                            listOf(AudioOption("orig_m4a", "Best Audio", "M4A / AAC · Native quality", null, isOriginal = true, approxSizeBytes = parsedDash.audioBytes))
-                        } else {
-                            emptyList()
-                        },
-                        directVideoUrl = parsedDash.videoOptions.first().directUrl,
-                        directAudioUrl = parsedDash.audioUrl,
-                        usedInstagramAuth = true,
-                        sanitizedTitle = sanitizeTitle(rawTitle, "Instagram_$shortcode"),
-                    )
-                }
-                val vidUrl = videoVersions?.optJSONObject(0)?.optString("url")?.takeIf { it.startsWith("http") }
-                if (vidUrl != null) {
-                    val size = probeUrlSize(vidUrl)
-                    return@runCatching MediaPreview(
-                        mediaId = shortcode,
-                        url = url,
-                        title = rawTitle,
-                        author = author,
-                        platform = "INSTAGRAM · VIDEO",
-                        durationText = formatDuration(item.optDouble("video_duration", 0.0).toInt()),
-                        thumbnailUrl = thumbUrl,
-                        videoOptions = listOf(
-                            VideoOption(1080, "Original", "HD", "MP4 · Direct stream", size),
-                        ),
-                        audioOptions = defaultAudioOptions.map {
-                            it.copy(approxSizeBytes = size?.let { s -> (s / 5L).coerceAtLeast(80_000L) })
-                        },
-                        directVideoUrl = vidUrl,
-                        usedInstagramAuth = true,
-                        sanitizedTitle = sanitizeTitle(rawTitle, "Instagram_$shortcode"),
-                    )
-                }
+            // Fallback: fetch authenticated page HTML (resolves media_id + DASH/JSON payload on private/share URLs)
+            val htmlConn = (URL(url).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 9000
+                readTimeout = 9000
+                instanceFollowRedirects = true
+                setRequestProperty("Cookie", cookieHeader)
+                setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/125.0 Mobile Safari/537.36")
+                setRequestProperty("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                setRequestProperty("Accept-Language", "en-US,en;q=0.9")
             }
-
-            if (imageUrls.isEmpty()) {
-                val singleImg = item.optJSONObject("image_versions2")
-                    ?.optJSONArray("candidates")?.optJSONObject(0)?.optString("url")
-                    ?.takeIf { it.startsWith("http") }
-                    ?: item.optString("display_url").takeIf { it.startsWith("http") }
-                if (singleImg != null) imageUrls.add(singleImg)
+            val htmlCode = htmlConn.responseCode
+            val html = if (htmlCode in 200..299) {
+                htmlConn.inputStream.bufferedReader().use { it.readText().take(3 * 1024 * 1024) }
+            } else {
+                ""
             }
-
-            if (imageUrls.isNotEmpty()) {
-                val list = imageUrls.toList()
-                return@runCatching MediaPreview(
-                    mediaId = shortcode,
-                    url = url,
-                    title = rawTitle,
-                    author = "$author · ${list.size} image${if (list.size == 1) "" else "s"}",
-                    platform = "INSTAGRAM · IMAGE",
-                    durationText = "${list.size} image${if (list.size == 1) "" else "s"}",
-                    thumbnailUrl = list.first(),
-                    videoOptions = emptyList(),
-                    audioOptions = emptyList(),
-                    imageUrls = list,
-                    usedInstagramAuth = true,
-                    sanitizedTitle = sanitizeTitle(rawTitle, "Instagram_$shortcode"),
-                )
+            htmlConn.disconnect()
+            DiagnosticLog.log("IGWeb", "code=$htmlCode len=${html.length}")
+            if (html.isNotBlank()) {
+                extractInstagramFromHtml(html, shortcode, url, cookieHeader, usedAuth = true)?.let {
+                    return@runCatching it
+                }
             }
             null
         }.onFailure { err ->
             DiagnosticLog.log("IGApiErr", err.message ?: err::class.java.simpleName)
         }.getOrNull()
+    }
+
+    private fun fetchInstagramViaWebView(context: Context, url: String): MediaPreview? {
+        val shortcode = Regex("""instagram\.com/(?:reel|reels|p|tv|share)/([A-Za-z0-9_-]+)""")
+            .find(url)?.groupValues?.getOrNull(1) ?: return null
+        val cookieMap = InstagramAuth.getCookieMap(context)
+        if ("sessionid" !in cookieMap) return null
+        val cookieHeader = cookieMap.entries.joinToString("; ") { "${it.key}=${it.value}" }
+
+        var payloadJson: String? = null
+        val latch = CountDownLatch(1)
+        val mainHandler = Handler(Looper.getMainLooper())
+        var webViewRef: WebView? = null
+
+        mainHandler.post {
+            runCatching {
+                val cm = CookieManager.getInstance()
+                cm.setAcceptCookie(true)
+                cookieMap.forEach { (k, v) ->
+                    cm.setCookie("https://www.instagram.com", "$k=$v; Path=/; Secure")
+                    cm.setCookie("https://i.instagram.com", "$k=$v; Path=/; Secure")
+                }
+                cm.flush()
+
+                val wv = WebView(context.applicationContext)
+                webViewRef = wv
+                wv.settings.apply {
+                    javaScriptEnabled = true
+                    domStorageEnabled = true
+                    mediaPlaybackRequiresUserGesture = true
+                    cacheMode = WebSettings.LOAD_NO_CACHE
+                    mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+                    userAgentString = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/125.0 Mobile Safari/537.36"
+                }
+
+                var captured = false
+                wv.webViewClient = object : WebViewClient() {
+                    override fun onPageFinished(view: WebView?, finishedUrl: String?) {
+                        if (captured || finishedUrl.isNullOrBlank() || finishedUrl == "about:blank") return
+                        captured = true
+                        mainHandler.postDelayed(
+                            {
+                                val script = """
+                                    (function() {
+                                      var html = document.documentElement ? document.documentElement.outerHTML : '';
+                                      var title = (document.querySelector('meta[property="og:title"]') || {}).content || document.title || '';
+                                      var videos = [];
+                                      document.querySelectorAll('video, video source').forEach(function(el) {
+                                        var s = el.currentSrc || el.src || '';
+                                        if (s.indexOf('http') === 0 && videos.indexOf(s) < 0) videos.push(s);
+                                      });
+                                      var images = [];
+                                      document.querySelectorAll('main img, article img').forEach(function(img) {
+                                        var s = img.currentSrc || img.src || '';
+                                        if (s.indexOf('http') === 0 && (img.naturalWidth || 0) >= 300 && images.indexOf(s) < 0) {
+                                          images.push(s);
+                                        }
+                                      });
+                                      return { html: html, title: title, videos: videos, images: images };
+                                    })();
+                                """.trimIndent()
+                                view?.evaluateJavascript(script) { result ->
+                                    payloadJson = result
+                                    latch.countDown()
+                                } ?: latch.countDown()
+                            },
+                            1500L,
+                        )
+                    }
+                }
+                wv.loadUrl(url)
+            }.onFailure {
+                latch.countDown()
+            }
+        }
+
+        latch.await(16, TimeUnit.SECONDS)
+        mainHandler.post {
+            runCatching {
+                webViewRef?.stopLoading()
+                webViewRef?.destroy()
+                CookieManager.getInstance().removeAllCookies(null)
+                CookieManager.getInstance().flush()
+            }
+        }
+
+        val raw = payloadJson?.takeIf { it.trimStart().startsWith("{") } ?: return null
+        val obj = runCatching { JSONObject(raw) }.getOrNull() ?: return null
+        val html = obj.optString("html")
+        DiagnosticLog.log("IGWebView", "htmlLen=${html.length}")
+        if (html.isNotBlank()) {
+            extractInstagramFromHtml(html, shortcode, url, cookieHeader, usedAuth = true)?.let {
+                return it
+            }
+        }
+
+        val domVideos = obj.optJSONArray("videos")
+        if (domVideos != null && domVideos.length() > 0) {
+            val vidUrl = (0 until domVideos.length())
+                .mapNotNull { domVideos.optString(it).takeIf { u -> u.startsWith("http") } }
+                .firstOrNull()
+            if (vidUrl != null) {
+                val size = probeUrlSize(vidUrl)
+                val title = obj.optString("title").ifBlank { "Instagram Reel ($shortcode)" }
+                return MediaPreview(
+                    mediaId = shortcode,
+                    url = url,
+                    title = title,
+                    author = "Instagram",
+                    platform = "INSTAGRAM · VIDEO",
+                    durationText = "",
+                    thumbnailUrl = null,
+                    videoOptions = listOf(VideoOption(1080, "Original", "HD", "MP4 · Direct stream", size)),
+                    audioOptions = defaultAudioOptions.map {
+                        it.copy(approxSizeBytes = size?.let { s -> (s / 5L).coerceAtLeast(80_000L) })
+                    },
+                    directVideoUrl = vidUrl,
+                    usedInstagramAuth = true,
+                    sanitizedTitle = sanitizeTitle(title, "Instagram_$shortcode"),
+                )
+            }
+        }
+
+        val domImages = obj.optJSONArray("images")
+        if (domImages != null && domImages.length() > 0) {
+            val imgs = (0 until domImages.length())
+                .mapNotNull { domImages.optString(it).takeIf { u -> u.startsWith("http") && !croppedUrlRegex.containsMatchIn(u) } }
+                .distinct()
+            if (imgs.isNotEmpty()) {
+                val title = obj.optString("title").ifBlank { "Instagram Post ($shortcode)" }
+                return MediaPreview(
+                    mediaId = shortcode,
+                    url = url,
+                    title = title,
+                    author = "Instagram · ${imgs.size} image${if (imgs.size == 1) "" else "s"}",
+                    platform = "INSTAGRAM · IMAGE",
+                    durationText = "${imgs.size} image${if (imgs.size == 1) "" else "s"}",
+                    thumbnailUrl = imgs.first(),
+                    videoOptions = emptyList(),
+                    audioOptions = emptyList(),
+                    imageUrls = imgs,
+                    usedInstagramAuth = true,
+                    sanitizedTitle = sanitizeTitle(title, "Instagram_$shortcode"),
+                )
+            }
+        }
+        return null
     }
 
     private fun fetchInstagramEmbedFallback(url: String): MediaPreview? {
@@ -1334,7 +1755,11 @@ object ZarditEngine {
             connectTimeout = 10_000
             readTimeout = 20_000
             instanceFollowRedirects = true
-            setRequestProperty("User-Agent", "Mozilla/5.0")
+            setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/125.0 Mobile Safari/537.36")
+            val lower = fileUrl.lowercase(Locale.US)
+            if ("instagram" in lower || "cdninstagram" in lower || "fbcdn" in lower) {
+                setRequestProperty("Referer", "https://www.instagram.com/")
+            }
         }
         val total = conn.contentLengthLong
         conn.inputStream.use { input ->

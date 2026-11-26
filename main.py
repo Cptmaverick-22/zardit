@@ -36,22 +36,28 @@ from config import (
     APP_TAGLINE,
     APP_VERSION,
     AUDIO_CHOICES,
+    IG_BROWSER_LABELS,
+    IG_BROWSERS,
     IMAGE_FORMATS,
     PLAYLIST_QUALITIES,
     audio_label,
     get_download_dir,
+    get_ig_browser,
     image_label,
     load_settings,
     remember_setting,
     save_download_dir,
+    save_ig_browser,
 )
 
 from desktop import notify, open_file, open_folder
 
 from downloader import (
     DownloadError,
+    PlaylistInfo,
     PlaylistLinkError,
     Reporter,
+    _normalize_playlist_entries,
     audio_format_options,
     detect_platform,
     download_audio,
@@ -66,6 +72,7 @@ from downloader import (
     has_playlist_and_video,
     image_format_options,
     is_image_only_info,
+    parse_instagram_source,
     parse_range,
     playlist_video_format_options,
     summarize_video,
@@ -603,6 +610,9 @@ def show_menu():
     meta.add_row("Tagline", f"[muted]{escape(APP_TAGLINE)}[/]")
     meta.add_row("Save to", f"[heading]{escape(truncate_middle(download_dir, path_limit))}[/]")
     meta.add_row("Theme", f"[accent.bold]{escape(theme_summary())}[/]")
+    ig_browser = get_ig_browser()
+    ig_status = IG_BROWSER_LABELS.get(ig_browser, ig_browser.title()) if ig_browser else "Off"
+    meta.add_row("IG Auth", f"[muted]{escape(ig_status)}[/]")
     meta.add_row("License", f"[muted]{escape(APP_LICENSE)}[/]")
     if not compact:
         meta.add_row("Sites", "[muted]YouTube · Instagram · Facebook · Reddit · X · Threads[/]")
@@ -633,6 +643,7 @@ def show_menu():
         ("4", "Download Location", "Change output folder"),
         ("5", "Update yt-dlp", "Check or install updates"),
         ("H", "Download History", history_desc),
+        ("G", "Instagram Access", "Private IG cookies or source"),
         ("T", "Switch Theme", f"Current: {theme_summary()}"),
         ("6", "Exit", "Quit application"),
     ]
@@ -892,6 +903,12 @@ def inspect_single(kind):
         show_error(error)
         return
 
+    _handle_single_info(kind, url, info)
+
+
+def _handle_single_info(kind, url, info):
+    """Present fetched or offline-parsed single video/audio/image options."""
+
     show_video_card(info)
     settings = load_settings()
 
@@ -940,6 +957,120 @@ def inspect_single(kind):
         offer_open_folder()
 
 
+def configure_instagram_access():
+    """Configure local browser cookies or extract a private IG post offline."""
+
+    print_section("Private Instagram Access")
+    current = get_ig_browser()
+    print_line(
+        f"[muted]Current browser cookies:[/] [heading]{escape(IG_BROWSER_LABELS.get(current, 'Off (Public posts only)'))}[/]"
+    )
+
+    menu = Table(
+        box=box.ROUNDED,
+        width=ui_width(),
+        border_style="card.border",
+        header_style="accent.bold",
+        padding=(0, 2),
+    )
+    menu.add_column("#", justify="right", style="accent.bold", width=4)
+    menu.add_column("Method", style="heading")
+    menu.add_column("How it works", style="muted")
+    menu.add_row("1", "Connect Browser Cookies", "Use Chrome/Firefox/Edge session locally")
+    menu.add_row("2", "Extract from Page Source (Offline)", "Paste view-source HTML / ?__a=1 JSON or file")
+    print_block(menu, top=1)
+
+    mode = select_option(["browser", "source"], "option")
+    if mode is None:
+        print_line("[warning]Cancelled.[/]")
+        return
+
+    if mode == "browser":
+        b_table = Table(
+            box=box.ROUNDED,
+            width=ui_width(),
+            border_style="card.border",
+            header_style="accent.bold",
+            padding=(0, 2),
+        )
+        b_table.add_column("#", justify="right", style="accent.bold", width=4)
+        b_table.add_column("Browser", style="heading")
+        opts = [None, *IG_BROWSERS]
+        for idx, b in enumerate(opts, start=1):
+            label = "Off (Public posts only)" if b is None else IG_BROWSER_LABELS.get(b, b.title())
+            tag = " [success]● active[/]" if b == current else ""
+            b_table.add_row(str(idx), f"{label}{tag}")
+        print_block(b_table, top=1)
+        chosen = select_option(opts, "browser", default=current)
+        if chosen is None and current is None:
+            print_line("[muted]Instagram cookies remain Off.[/]")
+            return
+        saved = save_ig_browser(chosen)
+        print_block(
+            status_panel(
+                f"Instagram browser cookies set to [heading]{escape(IG_BROWSER_LABELS.get(saved, 'Off'))}[/].",
+                "Instagram Access Updated",
+                border_style="success",
+                icon="[success]✔[/]",
+            ),
+            top=1,
+        )
+        return
+
+    src_url = prompt_line(
+        "Optional post URL",
+        hint="Enter = skip, Q = cancel",
+    )
+    if src_url.lower() == "q":
+        print_line("[warning]Cancelled.[/]")
+        return
+
+    file_or_paste = prompt_line(
+        "Path to saved HTML/JSON file, or press Enter to paste text",
+        hint="Q = cancel",
+    )
+    if file_or_paste.lower() == "q":
+        print_line("[warning]Cancelled.[/]")
+        return
+
+    raw_text = ""
+    if file_or_paste:
+        try:
+            raw_text = Path(file_or_paste).expanduser().read_text(encoding="utf-8", errors="replace")
+        except OSError as err:
+            show_error(DownloadError(f"Could not read file: {err}"))
+            return
+    else:
+        print_line("[muted]Paste view-source HTML or ?__a=1 JSON below, then type END on a new line:[/]")
+        lines = []
+        while True:
+            try:
+                line = input()
+            except EOFError:
+                break
+            if line.strip() == "END":
+                break
+            lines.append(line)
+        raw_text = "\n".join(lines)
+
+    try:
+        parsed = parse_instagram_source(raw_text, src_url or None)
+    except DownloadError as error:
+        show_error(error)
+        return
+
+    resolved_url = parsed.get("webpage_url") or src_url or "https://www.instagram.com/"
+    if parsed.get("_type") == "playlist":
+        entries = parsed.get("entries") or []
+        title = parsed.get("title") or "Instagram Post"
+        _normalize_playlist_entries(entries, title, resolved_url)
+        pl = PlaylistInfo(title=title, entries=entries)
+        _inspect_loaded_playlist(pl, resolved_url)
+        return
+
+    _handle_single_info("video", resolved_url, parsed)
+
+
 def inspect_playlist(url=None, preset_kind=None):
     if url is None:
         print_section("Download Playlist")
@@ -955,6 +1086,10 @@ def inspect_playlist(url=None, preset_kind=None):
         show_error(error)
         return
 
+    _inspect_loaded_playlist(playlist, url, preset_kind=preset_kind)
+
+
+def _inspect_loaded_playlist(playlist, url, preset_kind=None):
     entries = playlist.entries
     count = len(entries)
 
@@ -1309,7 +1444,7 @@ def main():
     while True:
         show_menu()
 
-        choice = prompt_line("Choose an option", hint="1-6, I = image, H = history, T = theme").lower()
+        choice = prompt_line("Choose an option", hint="1-6, I = image, H = history, G = IG, T = theme").lower()
 
         if choice == "1":
             inspect_single("video")
@@ -1332,6 +1467,9 @@ def main():
         elif choice == "h":
             show_history()
 
+        elif choice == "g":
+            configure_instagram_access()
+
         elif choice == "t":
             change_theme()
 
@@ -1345,7 +1483,7 @@ def main():
             break
 
         else:
-            print_line("[error]Invalid option. Enter 1-6, I, H, or T.[/]")
+            print_line("[error]Invalid option. Enter 1-6, I, H, G, or T.[/]")
 
         console.input("\n  [muted]Press Enter to return to the menu…[/]")
 

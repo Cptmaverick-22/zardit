@@ -431,9 +431,20 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    fun clearHistory() {
-        historyStore.clear()
-        refreshHistory()
+    fun clearHistory(deleteFiles: Boolean = false) {
+        if (deleteFiles) {
+            val items = _uiState.value.history
+            viewModelScope.launch(Dispatchers.IO) {
+                items.forEach { item ->
+                    ZarditEngine.deleteSavedFile(app, item.contentUri)
+                }
+                historyStore.clear()
+                refreshHistory()
+            }
+        } else {
+            historyStore.clear()
+            refreshHistory()
+        }
     }
 
     private fun refreshHistory() {

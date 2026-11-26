@@ -29,7 +29,7 @@ Download **MP4 videos**, **MP3 / original M4A audio**, **images** (Original, PNG
 | Platform | Videos | Audio | Images / Galleries |
 |---|:---:|:---:|:---:|
 | **YouTube** | MP4 (144p–2160p desktop / up to 1080p Android) + Playlists | MP3 (desktop) / M4A | — |
-| **Instagram** | Reels & Posts (uncropped preview + optional IG sign-in on Android) | MP3 (desktop) / Original | Single & Multi-photo Carousels |
+| **Instagram** | Reels & Posts (private/login-required via local **IG** auth + browser/offline tools) | MP3 (desktop) / Original | Single & Multi-photo Carousels |
 | **Facebook** | Videos & Reels | MP3 (desktop) / Original | Single & Multi-photo Posts |
 | **Reddit** | Videos | MP3 (desktop) / Original | Images |
 | **X (Twitter)** | Videos | MP3 (desktop) / Original | Images |
@@ -37,9 +37,9 @@ Download **MP4 videos**, **MP3 / original M4A audio**, **images** (Original, PNG
 
 Zardit includes **three interfaces** across desktop and mobile:
 
-- **Desktop App (`gui.py` / `Zardit`)** — Qt (PySide6) interface with **Auto / Light / Dark** themes, one-tap **Paste & Fetch**, estimated file sizes, interactive gallery/carousel previews, and built-in **History** playback & management.
-- **Terminal App (`main.py` / `zardit-cli`)** — Clean, themed Rich menu-driven CLI sharing settings and download history with the desktop app.
-- **Android App (`android/`)** — Lightweight Material 3 Jetpack Compose companion app (`arm64-v8a`) with Android **Share-sheet** support, **Auto / Light / Dark** themes, foreground download service & notifications, native `MediaMuxer` MP4 assembly, Storage Access Framework (`Downloads/Zardit`) saving, optional local AES-256-GCM encrypted Instagram login, and **History** management.
+- **Desktop App (`gui.py` / `Zardit`)** — Qt (PySide6) interface with **Auto / Light / Dark** themes, one-tap **Paste & Fetch**, **IG** private Instagram access (browser cookies or 100% offline source parser), interactive gallery/carousel previews, and built-in **History** playback & management.
+- **Terminal App (`main.py` / `zardit-cli`)** — Clean, themed Rich menu-driven CLI sharing settings, Instagram access, and download history with the desktop app.
+- **Android App (`android/`)** — Lightweight Material 3 Jetpack Compose companion app (`arm64-v8a`) with Android **Share-sheet** support, **Auto / Light / Dark** themes, foreground download service & notifications, native `MediaMuxer` MP4 assembly, Storage Access Framework (`Downloads/Zardit`) saving, optional local AES-256-GCM encrypted Instagram login (supporting private reels, photos, carousels & `/share/` links), and full **History** management (with device-file deletion).
 
 ---
 
@@ -84,7 +84,7 @@ chmod +x Zardit-*-x86_64.AppImage
 - Print diagnostics: `./Zardit-*-x86_64.AppImage --diagnostics`
 - Install app-menu icon & `zardit` / `zardit-cli` commands locally:
   ```bash
-  ./packaging/linux/install_local.sh ~/Applications/Zardit-1.2.1-x86_64.AppImage
+  ./packaging/linux/install_local.sh ~/Applications/Zardit-1.3-x86_64.AppImage
   ```
   *(Run `./packaging/linux/install_local.sh` without arguments to create desktop/CLI launchers backed by your local `.venv`.)*
 
@@ -195,6 +195,7 @@ python zardit_app.py
    - For playlists or multi-photo galleries, select items via checkboxes, ranges (`1-3, 5, 8-10`), title filter, or the image preview modal.
 5. Check **Save to** (click **Change…** to pick another folder) and click **Download**.
 6. Switch to the **History** tab at any time to play, open, or clean up past downloads, or toggle **Auto / Light / Dark** themes in the top bar.
+7. **Optional Private Instagram (`IG`):** Click **IG** in the top bar to either connect browser cookies (**Chrome, Firefox, Edge, Brave, Chromium, Opera, or Vivaldi**) or use the **100% offline Page Source / JSON extractor** (`Ctrl+U` / `view-source:` or `?__a=1&__d=dis`) for private reels, photos, and carousels without sending data to any third-party server.
 
 ---
 
@@ -203,11 +204,12 @@ python zardit_app.py
 Start it with `zardit-cli`, `./Zardit-*-x86_64.AppImage --cli`, or `python main.py`:
 
 ```text
-  ╭─ ▶ Zardit v1.2.1 ──────────────────────────────────────────────────────────╮
+  ╭─ ▶ Zardit v1.3 ────────────────────────────────────────────────────────────╮
   │                                                                            │
   │  Tagline  Blaze through videos, audio & playlists across every platform.   │
   │  Save to  ~/Downloads/Zardit                                               │
   │  Theme    Auto (Dark)                                                      │
+  │  IG Auth  Mozilla Firefox                                                  │
   │  License  GPL-3.0-or-later                                                 │
   │  Sites    YouTube · Instagram · Facebook · Reddit · X · Threads            │
   │  Tools    FFmpeg ✔   Deno ✔                                                │
@@ -219,15 +221,17 @@ Start it with `zardit-cli`, `./Zardit-*-x86_64.AppImage --cli`, or `python main.
   │    [4]    Download Location                          Change output folder  │
   │    [5]    Update yt-dlp                          Check or install updates  │
   │    [H]    Download History                        View, play & manage (3)  │
+  │    [G]    Instagram Access                   Private IG cookies or source  │
   │    [T]    Switch Theme                               Current: Auto (Dark)  │
   │    [6]    Exit                                           Quit application  │
   │                                                                            │
   ╰───────────────────────────────────────────────────── Enter a choice below ─╯
 
-  › Choose an option (1-6, I = image, H = history, T = theme): 
+  › Choose an option (1-6, I = image, H = history, G = IG, T = theme): 
 ```
 
-- Enter **`1`–`6`**, **`I`**, **`H`**, or **`T`** (`tc` to quick-cycle **Auto / Light / Dark**, or launch with `--theme auto|light|dark`).
+- Enter **`1`–`6`**, **`I`**, **`H`**, **`G`**, or **`T`** (`tc` to quick-cycle **Auto / Light / Dark**, or launch with `--theme auto|light|dark`).
+- Use **`[G] Instagram Access`** to pick a signed-in browser (`chrome`, `firefox`, `edge`, `brave`, etc.) or paste/load saved Instagram page HTML (`view-source:` / `?__a=1&__d=dis`) completely offline.
 - Type **`Q`** at prompts to go back, or press **`Ctrl+C`** during a download to cancel cleanly.
 
 ---
@@ -237,8 +241,8 @@ Start it with `zardit-cli`, `./Zardit-*-x86_64.AppImage --cli`, or `python main.
 1. **Paste or Share a link:** Paste any supported URL and tap **Paste & Fetch** (or **Fetch**), or use Android's **Share** menu from YouTube, Instagram, Threads, Facebook, Reddit, or X directly into **Zardit**.
 2. **Pick your mode & quality:** Switch between **Video (MP4)**, **Audio** (shown when audio tracks are exposed), or **Image** (**Original**, **PNG**, **JPG**, or **WebP**). For playlists and multi-photo carousels, toggle items or use range syntax like `1-3, 5`.
 3. **Choose where to save:** Defaults to `Downloads/Zardit` (tap **Change…** to pick another folder with Android's native folder picker).
-4. **Download & Manage History:** Track progress in-app or from the notification bar, cancel cleanly any time, and open the **History** tab to **Open**, **Share**, or delete items (choose **History only** or **Delete file too**).
-5. **Optional Instagram sign-in (`IG`):** Tap **IG** in the top bar only if you need to fetch login-required or age-restricted Instagram posts. Your session stays local and encrypted with **Android Keystore (AES-256-GCM)**.
+4. **Download & Manage History:** Track progress in-app or from the notification bar, cancel cleanly any time, and open the **History** tab to **Open**, **Share**, delete individual items, or tap **Clear all** (choosing **History only** or **Delete files too**).
+5. **Optional Instagram sign-in (`IG`):** Tap **IG** in the top bar if you want to fetch private, follow-only, or `/share/` Instagram posts. Everything runs directly on your device using your encrypted session (`AES-256-GCM`) — including automatic API and authenticated on-device extraction for private reels, photos, and carousels.
 6. **In-app Engine updater (`Engine`):** Tap **Engine** in the top bar to update the built-in extraction engine directly on-device.
 
 ---
@@ -311,7 +315,7 @@ Titles are sanitized across Linux, Windows, macOS, and Android SAF (`:` -> ` -`,
 
 - No Zardit accounts, analytics, telemetry, or usage tracking.
 - Network requests go only to the media source and official update endpoints (PyPI for desktop `yt-dlp` checks, or when manually triggering an in-app Android engine update).
-- On Android, optional Instagram sign-in stores only minimal session cookies (`sessionid`, `csrftoken`, `ds_user_id`) encrypted locally using **Android Keystore (`AES/GCM/NoPadding`)** — credentials never leave your device except to Instagram itself, and can be cleared with one tap.
+- **Private Instagram access runs 100% locally:** On desktop, Zardit reads only the browser cookie store you pick via `yt-dlp` or parses pasted `view-source:` / `?__a=1&__d=dis` data offline in memory. On Android, optional Instagram sign-in stores only minimal session cookies (`sessionid`, `csrftoken`, `ds_user_id`) encrypted locally using **Android Keystore (`AES/GCM/NoPadding`)** — credentials and cookies are never logged or sent to third-party saver websites, and can be wiped with one tap.
 - Share-tracking query parameters (such as `si=`, `utm_source=`) are stripped in logs, and desktop diagnostics replace your home directory with `~`.
 
 ---

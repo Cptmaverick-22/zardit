@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QBoxLayout,
     QButtonGroup,
     QCheckBox,
+    QComboBox,
     QDialog,
     QFileDialog,
     QFrame,
@@ -39,6 +40,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMessageBox,
+    QPlainTextEdit,
     QProgressBar,
     QProgressDialog,
     QPushButton,
@@ -62,12 +64,16 @@ from config import (
     APP_SLUG,
     APP_TAGLINE,
     APP_VERSION,
+    IG_BROWSER_LABELS,
+    IG_BROWSERS,
     audio_label,
     get_download_dir,
+    get_ig_browser,
     image_label,
     load_settings,
     remember_setting,
     save_download_dir,
+    save_ig_browser,
 )
 
 from desktop import notify
@@ -75,8 +81,10 @@ from desktop import notify
 from downloader import (
     VIDEO_ID_PATTERN,
     DownloadError,
+    PlaylistInfo,
     PlaylistLinkError,
     Reporter,
+    _normalize_playlist_entries,
     audio_format_options,
     best_image_url,
     detect_platform,
@@ -93,6 +101,7 @@ from downloader import (
     has_playlist_and_video,
     image_format_options,
     is_image_only_info,
+    parse_instagram_source,
     parse_range,
     playlist_video_format_options,
     summarize_video,
@@ -309,6 +318,41 @@ def playlist_thumbnail(playlist):
     return load_thumbnail(thumb)
 
 
+def _package_single_or_carousel(info):
+    """Turn a fetched info or offline-parsed IG dict into an on_fetched tuple."""
+
+    if info.get("_type") == "playlist":
+        entries = info.get("entries") or []
+        title = info.get("title") or "Instagram Post"
+        _normalize_playlist_entries(
+            entries,
+            title,
+            info.get("webpage_url") or "https://www.instagram.com/",
+        )
+        playlist = PlaylistInfo(title=title, entries=entries)
+        return ("playlist", playlist, playlist_thumbnail(playlist))
+
+    summary = summarize_video(info)
+    if is_image_only_info(info):
+        img_url = best_image_url(info) or summary.thumbnail
+        thumb_bytes = load_thumbnail(img_url)
+        return (
+            "image",
+            info,
+            summary,
+            image_format_options(info),
+            thumb_bytes,
+        )
+
+    return (
+        "video",
+        info,
+        summary,
+        video_format_options(info),
+        load_thumbnail(summary.thumbnail),
+    )
+
+
 def fetch_everything(url, prefer_playlist=False):
     """Fetch a single video or a playlist (runs in a thread)."""
 
@@ -320,27 +364,7 @@ def fetch_everything(url, prefer_playlist=False):
             pass  # A playlist link: fetch it as a playlist below.
 
         else:
-            summary = summarize_video(info)
-            if is_image_only_info(info):
-                img_url = best_image_url(info) or summary.thumbnail
-                thumb_bytes = load_thumbnail(img_url)
-                if thumb_bytes and not info.get("filesize"):
-                    info["filesize"] = len(thumb_bytes)
-                return (
-                    "image",
-                    info,
-                    summary,
-                    image_format_options(info),
-                    thumb_bytes,
-                )
-
-            return (
-                "video",
-                info,
-                summary,
-                video_format_options(info),
-                load_thumbnail(summary.thumbnail),
-            )
+            return _package_single_or_carousel(info)
 
     playlist = fetch_playlist(url)
 
@@ -915,6 +939,169 @@ class AboutDialog(QDialog):
         layout.addLayout(buttons)
 
 
+class InstagramAccessDialog(QDialog):
+    """Configure local browser cookies or extract offline from private IG source."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Private Instagram Access")
+        self.resize(580, 560)
+        icon = load_app_icon()
+        if not icon.isNull():
+            self.setWindowIcon(icon)
+
+        self.parsed_info = None
+        self.parsed_url = ""
+        self.browser_changed = False
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(14)
+
+        # Card 1: Browser cookies (local yt-dlp --cookies-from-browser)
+        browser_card = QFrame()
+        browser_card.setObjectName("card")
+        b_layout = QVBoxLayout(browser_card)
+        b_layout.setContentsMargins(14, 12, 14, 12)
+        b_layout.setSpacing(8)
+
+        b_title = QLabel("Option 1 · Use Signed-In Browser Cookies (Automatic)")
+        b_title.setObjectName("sectionTitle")
+        b_hint = plain_label(
+            "Reads your existing Instagram session directly from a browser on this "
+            "PC (never uploaded anywhere). Tip: Firefox works on all OSes; Chrome/"
+            "Edge on Windows v130+ encrypts local cookies — use Option 2 if locked.",
+            object_name="mutedText",
+        )
+        b_row = QHBoxLayout()
+        b_row.setSpacing(8)
+        self.browser_combo = QComboBox()
+        self.browser_combo.addItem("Off (Public posts only)", None)
+        for key in IG_BROWSERS:
+            self.browser_combo.addItem(IG_BROWSER_LABELS.get(key, key.title()), key)
+
+        current_browser = get_ig_browser()
+        if current_browser:
+            idx = self.browser_combo.findData(current_browser)
+            if idx >= 0:
+                self.browser_combo.setCurrentIndex(idx)
+
+        save_browser_btn = QPushButton("Save")
+        save_browser_btn.setObjectName("primaryBtn")
+        save_browser_btn.clicked.connect(self.save_browser_choice)
+
+        clear_browser_btn = QPushButton("Turn Off")
+        clear_browser_btn.setObjectName("secondaryBtn")
+        clear_browser_btn.clicked.connect(self.disconnect_browser)
+
+        b_row.addWidget(self.browser_combo, 1)
+        b_row.addWidget(save_browser_btn)
+        b_row.addWidget(clear_browser_btn)
+
+        self.browser_status = plain_label("", object_name="mutedText")
+        b_layout.addWidget(b_title)
+        b_layout.addWidget(b_hint)
+        b_layout.addLayout(b_row)
+        b_layout.addWidget(self.browser_status)
+        layout.addWidget(browser_card)
+
+        # Card 2: Offline Page Source / ?__a=1 JSON extractor (SaveIG-style, 100% local)
+        source_card = QFrame()
+        source_card.setObjectName("card")
+        s_layout = QVBoxLayout(source_card)
+        s_layout.setContentsMargins(14, 12, 14, 12)
+        s_layout.setSpacing(8)
+
+        s_title = QLabel("Option 2 · Paste Page Source / JSON (100% Offline)")
+        s_title.setObjectName("sectionTitle")
+        s_steps = plain_label(
+            "1. Open your private Reel/post in your logged-in browser.\n"
+            "2. Press Ctrl+U (View Page Source) or append ?__a=1&__d=dis, then Ctrl+A -> Ctrl+C.\n"
+            "3. Paste below — extracted completely offline on your PC.",
+            object_name="mutedText",
+        )
+        self.source_url_input = QLineEdit()
+        self.source_url_input.setPlaceholderText(
+            "Optional: post link (https://www.instagram.com/reel/…)"
+        )
+        self.source_text = QPlainTextEdit()
+        self.source_text.setPlaceholderText(
+            "Paste copied HTML page source or ?__a=1 JSON here…"
+        )
+        self.source_text.setMinimumHeight(130)
+
+        self.error_label = plain_label("", object_name="statusError")
+        self.error_label.hide()
+
+        s_btns = QHBoxLayout()
+        s_btns.setSpacing(8)
+        paste_btn = QPushButton("Paste Clipboard")
+        paste_btn.setObjectName("secondaryBtn")
+        paste_btn.clicked.connect(self.paste_clipboard)
+
+        extract_btn = QPushButton("Extract Media (Offline)")
+        extract_btn.setObjectName("primaryBtn")
+        extract_btn.clicked.connect(self.extract_offline)
+
+        s_btns.addWidget(paste_btn)
+        s_btns.addStretch(1)
+        s_btns.addWidget(extract_btn)
+
+        s_layout.addWidget(s_title)
+        s_layout.addWidget(s_steps)
+        s_layout.addWidget(self.source_url_input)
+        s_layout.addWidget(self.source_text, 1)
+        s_layout.addWidget(self.error_label)
+        s_layout.addLayout(s_btns)
+        layout.addWidget(source_card, 1)
+
+        bottom = QHBoxLayout()
+        bottom.addStretch(1)
+        close_btn = QPushButton("Close")
+        close_btn.setObjectName("secondaryBtn")
+        close_btn.clicked.connect(self.reject)
+        bottom.addWidget(close_btn)
+        layout.addLayout(bottom)
+
+    def save_browser_choice(self):
+        chosen = self.browser_combo.currentData()
+        saved = save_ig_browser(chosen)
+        self.browser_changed = True
+        self.browser_status.setText(
+            f"Connected locally to {IG_BROWSER_LABELS.get(saved, saved)}."
+            if saved
+            else "Browser cookies turned off."
+        )
+
+    def disconnect_browser(self):
+        self.browser_combo.setCurrentIndex(0)
+        save_ig_browser(None)
+        self.browser_changed = True
+        self.browser_status.setText("Browser cookies turned off.")
+
+    def paste_clipboard(self):
+        clip = QApplication.clipboard().text() or ""
+        if clip.strip():
+            self.source_text.setPlainText(clip)
+            self.error_label.hide()
+
+    def extract_offline(self):
+        raw = self.source_text.toPlainText().strip()
+        src_url = self.source_url_input.text().strip()
+        try:
+            self.parsed_info = parse_instagram_source(raw, src_url or None)
+        except DownloadError as error:
+            self.error_label.setText(str(error))
+            self.error_label.show()
+            return
+        self.parsed_url = (
+            self.parsed_info.get("webpage_url")
+            or src_url
+            or "https://www.instagram.com/"
+        )
+        self.accept()
+
+
 # --------------------------------------------------------------------------
 # Main window
 # --------------------------------------------------------------------------
@@ -1137,6 +1324,14 @@ class MainWindow(QWidget):
             theme_layout.addWidget(btn)
             self.theme_buttons[mode] = btn
 
+        self.ig_button = QPushButton("IG")
+        self.ig_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.ig_button.setToolTip(
+            "Configure private Instagram browser cookies or extract offline from page source"
+        )
+        self.ig_button.clicked.connect(self.open_instagram_access)
+        self.refresh_ig_button()
+
         self.update_button = QPushButton("Update yt-dlp")
         self.update_button.setObjectName("updateBtn")
         self.update_button.setProperty("updateAvailable", "false")
@@ -1155,6 +1350,7 @@ class MainWindow(QWidget):
 
         controls_row.addWidget(nav_frame)
         controls_row.addWidget(theme_frame)
+        controls_row.addWidget(self.ig_button)
         controls_row.addWidget(self.update_button)
         controls_row.addWidget(self.about_button)
         controls_row.addStretch(1)
@@ -2995,6 +3191,36 @@ class MainWindow(QWidget):
         delete_file = bool(delete_check and delete_check.isChecked())
         remove_history_entry(entry.get("id"), delete_file=delete_file)
         self.refresh_history()
+
+    def refresh_ig_button(self):
+        browser = get_ig_browser()
+        if browser:
+            self.ig_button.setText(f"IG · {browser.title()}")
+            self.ig_button.setObjectName("accentSoftBtn")
+        else:
+            self.ig_button.setText("IG")
+            self.ig_button.setObjectName("secondaryBtn")
+        repolish(self.ig_button)
+
+    def open_instagram_access(self):
+        if self.state in ("fetching", "downloading"):
+            return
+        dlg = InstagramAccessDialog(self)
+        accepted = dlg.exec() == QDialog.DialogCode.Accepted
+        self.refresh_ig_button()
+        if accepted and dlg.parsed_info is not None:
+            parsed_info = dlg.parsed_info
+            self.url = dlg.parsed_url
+            self.url_input.setText(self.url)
+            self.failed_items = []
+            self.show_status("Preparing extracted Instagram media…")
+            self.set_state("fetching")
+            task = self.start_task(
+                lambda _thread: _package_single_or_carousel(parsed_info)
+            )
+            task.done.connect(self.on_fetched)
+            task.failed.connect(self.on_fetch_failed)
+            task.start()
 
     def clear_all_history(self):
         entries = load_history()

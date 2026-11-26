@@ -766,6 +766,92 @@ class GuiInterfaceTests(unittest.TestCase):
         audio_opts = downloader.audio_format_options(info)
         self.assertEqual(audio_opts[-1].size, 170000)
 
+    def test_private_instagram_browser_config_share_resolve_and_source_parser(self):
+        # 1. Config persistence & _ig_cookie_options
+        self.assertIsNone(config.get_ig_browser())
+        self.assertEqual(
+            downloader._ig_cookie_options("https://www.instagram.com/reel/abc/"),
+            {},
+        )
+        config.save_ig_browser("firefox")
+        self.assertEqual(config.get_ig_browser(), "firefox")
+        self.assertEqual(
+            downloader._ig_cookie_options("https://www.instagram.com/reel/abc/"),
+            {"cookiesfrombrowser": ("firefox",)},
+        )
+        self.assertEqual(
+            downloader._ig_cookie_options("https://www.youtube.com/watch?v=abcdefghijk"),
+            {},
+        )
+        self.window.refresh_ig_button()
+        self.assertEqual(self.window.ig_button.text(), "IG · Firefox")
+        config.save_ig_browser(None)
+        self.window.refresh_ig_button()
+        self.assertEqual(self.window.ig_button.text(), "IG")
+
+        # 2. Offline JSON (?__a=1) 1080p DASH + carousel extraction
+        import json as _json
+
+        mpd_xml = (
+            '<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"><Period>'
+            '<AdaptationSet contentType="video">'
+            '<Representation id="v1080" mimeType="video/mp4" codecs="vp09.00.40.08" '
+            'width="1080" height="1920" bandwidth="2300000" FBContentLength="3600000">'
+            '<BaseURL>https://scontent.cdninstagram.com/priv_1080.mp4</BaseURL>'
+            '</Representation></AdaptationSet>'
+            '<AdaptationSet contentType="audio">'
+            '<Representation id="a1" mimeType="audio/mp4" codecs="mp4a.40.5" '
+            'bandwidth="64000" FBContentLength="180000">'
+            '<BaseURL>https://scontent.cdninstagram.com/priv_aud.m4a</BaseURL>'
+            '</Representation></AdaptationSet>'
+            '</Period></MPD>'
+        )
+        api_json = _json.dumps({
+            "items": [{
+                "code": "PrivReel123",
+                "caption": {"text": "Private Reel"},
+                "user": {"username": "my_private_profile"},
+                "video_duration": 13.4,
+                "video_dash_manifest": mpd_xml,
+                "image_versions2": {
+                    "candidates": [{"url": "https://scontent.cdninstagram.com/t.jpg", "width": 1080, "height": 1920}]
+                },
+            }]
+        })
+        parsed = downloader.parse_instagram_source(api_json, "https://www.instagram.com/reel/PrivReel123/")
+        self.assertEqual(parsed["id"], "PrivReel123")
+        self.assertEqual(downloader.available_qualities(parsed), [1080])
+        self.assertEqual(downloader.video_format_options(parsed)[0].size, 3780000)
+
+        # 3. Offline view-source HTML carousel extraction via InstagramAccessDialog
+        html_src = (
+            '<html><head><link rel="canonical" href="https://www.instagram.com/p/PrivCar1/">'
+            '<meta property="og:title" content="My Private Post"></head><body>'
+            '{"display_url":"https:\\/\\/scontent.cdninstagram.com\\/p1.jpg"}'
+            '{"display_url":"https:\\/\\/scontent.cdninstagram.com\\/p2.jpg"}'
+            '</body></html>'
+        )
+        dlg = gui.InstagramAccessDialog(self.window)
+        self.addCleanup(dlg.close)
+        dlg.source_text.setPlainText(html_src)
+        dlg.extract_offline()
+        self.assertIsNotNone(dlg.parsed_info)
+        self.assertEqual(dlg.parsed_info["_type"], "playlist")
+        self.assertEqual(len(dlg.parsed_info["entries"]), 2)
+
+        # 4. /share/ Instagram redirect resolution
+        class FakeShareResp:
+            def geturl(self):
+                return "https://www.instagram.com/p/DbyevnHDzrM/"
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return False
+
+        with mock.patch.object(downloader.urllib.request, "urlopen", return_value=FakeShareResp()):
+            resolved = downloader._resolve_instagram_share_url("https://www.instagram.com/share/BAWRAVe3vK")
+        self.assertEqual(resolved, "https://www.instagram.com/p/DbyevnHDzrM/")
+
 
 class TerminalUiTests(unittest.TestCase):
     def setUp(self):
