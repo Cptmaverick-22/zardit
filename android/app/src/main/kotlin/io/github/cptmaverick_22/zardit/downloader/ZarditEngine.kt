@@ -12,6 +12,7 @@ import android.text.Html
 import androidx.documentfile.provider.DocumentFile
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
+import io.github.cptmaverick_22.zardit.data.DiagnosticLog
 import io.github.cptmaverick_22.zardit.data.InstagramAuth
 import java.io.File
 import java.net.HttpURLConnection
@@ -50,6 +51,7 @@ object ZarditEngine {
             "Enter a valid http/https link."
         }
         val cleanUrl = normalizeAndResolveUrl(rawUrl)
+        DiagnosticLog.log("Fetch", "URL resolved: $cleanUrl")
 
         if (isPlaylistUrl(cleanUrl)) {
             fetchPlaylistPreview(cleanUrl)?.let { return it }
@@ -59,29 +61,29 @@ object ZarditEngine {
             YoutubeDL.getInstance().getInfo(cleanUrl)
         } catch (t: Throwable) {
             val msg = t.message.orEmpty()
+            DiagnosticLog.log("getInfoError", msg)
             val isIg = detectPlatformName(cleanUrl) == "Instagram"
             val isThreads = detectPlatformName(cleanUrl) == "Threads"
             val isNoVideo = msg.contains("No video formats found", ignoreCase = true) ||
                 msg.contains("no video in this post", ignoreCase = true)
 
             if (isIg) {
-                if (InstagramAuth.hasSession(context)) {
-                    fetchInstagramApiWithCookies(context, cleanUrl)?.let { return it }
-                }
                 if (isNoVideo) {
                     fetchImageFallback(context, cleanUrl, useIgCookies = false)?.let { return it }
-                    fetchInstagramEmbedFallback(cleanUrl)?.let { return it }
-                } else {
-                    fetchInstagramEmbedFallback(cleanUrl)?.let { return it }
                 }
                 if (InstagramAuth.hasSession(context)) {
+                    fetchInstagramApiWithCookies(context, cleanUrl)?.let { return it }
+                    if (isNoVideo) {
+                        fetchImageFallback(context, cleanUrl, useIgCookies = true)?.let { return it }
+                    }
                     fetchWithInstagramCookies(context, cleanUrl)?.let { return it }
                 }
+                fetchInstagramEmbedFallback(cleanUrl)?.let { return it }
             } else if (isNoVideo) {
                 fetchImageFallback(context, cleanUrl, useIgCookies = false)?.let { return it }
             }
 
-            if (isThreads || msg.contains("generic", ignoreCase = true)) {
+            if (isThreads || msg.contains("generic", ignoreCase = true) || msg.contains("Unsupported URL", ignoreCase = true)) {
                 fetchWebMetaFallback(cleanUrl)?.let { return it }
             }
 
@@ -212,21 +214,34 @@ object ZarditEngine {
         val lower = current.lowercase(Locale.US)
         if (("threads.com" in lower || "threads.net" in lower) && "/share/" in lower) {
             runCatching {
-                val conn = (URL(current).openConnection() as HttpURLConnection).apply {
-                    requestMethod = "GET"
-                    instanceFollowRedirects = true
-                    connectTimeout = 5000
-                    readTimeout = 5000
-                    setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/125.0 Mobile Safari/537.36")
+                var hop = current
+                repeat(4) {
+                    val conn = (URL(hop).openConnection() as HttpURLConnection).apply {
+                        requestMethod = "GET"
+                        instanceFollowRedirects = false
+                        connectTimeout = 5000
+                        readTimeout = 5000
+                        setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/125.0 Mobile Safari/537.36")
+                    }
+                    val code = conn.responseCode
+                    val loc = conn.getHeaderField("Location")
+                    conn.disconnect()
+                    if (code in 300..399 && !loc.isNullOrBlank()) {
+                        hop = if (loc.startsWith("http")) loc else URL(URL(hop), loc).toString()
+                    } else {
+                        return@repeat
+                    }
                 }
-                conn.responseCode
-                val resolved = conn.url.toString()
-                conn.disconnect()
-                if (resolved.startsWith("http")) current = resolved
+                current = hop
             }
         }
-        if ("threads.com" in current.lowercase(Locale.US)) {
+        if ("threads.com" in current.lowercase(Locale.US) || "threads.net" in current.lowercase(Locale.US)) {
             current = current.replace("threads.com", "threads.net", ignoreCase = true)
+            // Strip Threads ?xmt=...&slof=1 tracking params that break extractors
+            val qIdx = current.indexOf('?')
+            if (qIdx > 0 && "/post/" in current) {
+                current = current.substring(0, qIdx)
+            }
         }
         return current
     }
@@ -305,6 +320,7 @@ object ZarditEngine {
             }
             val body = conn.inputStream.bufferedReader().use { it.readText() }
             conn.disconnect()
+            DiagnosticLog.log("IGApi", "shortcode=$shortcode len=${body.length} isJson=${body.trimStart().startsWith("{")}")
             if (body.isBlank() || !body.trimStart().startsWith("{")) return@runCatching null
 
             val root = JSONObject(body)
@@ -399,6 +415,8 @@ object ZarditEngine {
                 )
             }
             null
+        }.onFailure { err ->
+            DiagnosticLog.log("IGApiErr", err.message ?: err::class.java.simpleName)
         }.getOrNull()
     }
 
@@ -578,6 +596,7 @@ object ZarditEngine {
                 InstagramAuth.withTempCookieFile(context) { cookieFile ->
                     val req = YoutubeDLRequest(url).apply {
                         addOption("--dump-single-json")
+                        addOption("--ignore-no-formats-error")
                         addOption("--ignore-errors")
                         addOption("--cookies", cookieFile.absolutePath)
                     }
@@ -586,6 +605,7 @@ object ZarditEngine {
             } else {
                 val req = YoutubeDLRequest(url).apply {
                     addOption("--dump-single-json")
+                    addOption("--ignore-no-formats-error")
                     addOption("--ignore-errors")
                 }
                 YoutubeDL.getInstance().execute(req, null, null).out
@@ -604,6 +624,7 @@ object ZarditEngine {
                 if (urls.isEmpty()) {
                     bestUncroppedImageFromJson(json)?.let { urls.add(it) }
                 }
+                DiagnosticLog.log("ImageFallback", "useCookies=$useIgCookies found=${urls.size}")
                 if (urls.isNotEmpty()) {
                     val platform = json.optString("extractor_key", detectPlatformName(url))
                         .replace("Tab", "").uppercase(Locale.US)
@@ -630,74 +651,88 @@ object ZarditEngine {
         return fetchWebMetaFallback(url)
     }
 
-    private fun fetchWebMetaFallback(url: String): MediaPreview? = runCatching {
-        val conn = (URL(url).openConnection() as HttpURLConnection).apply {
-            connectTimeout = 8000
-            readTimeout = 8000
-            instanceFollowRedirects = true
-            setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/125.0 Mobile Safari/537.36")
+    private fun fetchWebMetaFallback(url: String): MediaPreview? {
+        for (ua in listOf(
+            "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
+            "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/125.0 Mobile Safari/537.36",
+        )) {
+            val preview = runCatching {
+                val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 8000
+                    readTimeout = 8000
+                    instanceFollowRedirects = true
+                    setRequestProperty("User-Agent", ua)
+                }
+                val code = conn.responseCode
+                val html = conn.inputStream.bufferedReader().use { it.readText().take(768 * 1024) }
+                conn.disconnect()
+                DiagnosticLog.log("WebMeta", "HTTP $code ua=${ua.take(18)} len=${html.length}")
+
+                val meta = mutableMapOf<String, String>()
+                ogTagRegex.findAll(html).forEach { m ->
+                    val key = (m.groupValues[1].ifEmpty { m.groupValues[4] }).lowercase(Locale.US)
+                    val valText = decodeHtml(m.groupValues[2].ifEmpty { m.groupValues[3] }).trim()
+                    if (key.isNotEmpty() && valText.isNotEmpty() && key !in meta) {
+                        meta[key] = valText
+                    }
+                }
+
+                val platform = detectPlatformName(url).uppercase(Locale.US)
+                val title = decodeHtml(meta["og:title"] ?: meta["twitter:title"] ?: "$platform post")
+                val imgUrl = meta["og:image:secure_url"] ?: meta["og:image"] ?: meta["twitter:image"]
+
+                val videoUrl = (meta["og:video:secure_url"] ?: meta["og:video"] ?: meta["twitter:player:stream"])
+                    ?.takeIf { it.startsWith("http") }
+                    ?: Regex(""""video_url"\s*:\s*"(https?:[^"]+)"""")
+                        .find(html)?.groupValues?.getOrNull(1)?.unescapeJsonUrl()
+                    ?: Regex(""""video_versions"\s*:\s*\[\s*\{[^}]*"url"\s*:\s*"(https?:[^"]+)"""")
+                        .find(html)?.groupValues?.getOrNull(1)?.unescapeJsonUrl()
+                    ?: Regex("""<video[^>]+src=["'](https?://[^"']+)["']""", RegexOption.IGNORE_CASE)
+                        .find(html)?.groupValues?.getOrNull(1)?.replace("&amp;", "&")
+
+                if (!videoUrl.isNullOrBlank()) {
+                    val size = probeUrlSize(videoUrl)
+                    return@runCatching MediaPreview(
+                        mediaId = url.hashCode().toString(),
+                        url = url,
+                        title = title,
+                        author = platform,
+                        platform = "$platform · VIDEO",
+                        durationText = "",
+                        thumbnailUrl = imgUrl,
+                        videoOptions = listOf(
+                            VideoOption(1080, "Original", "MP4", "Direct stream", size),
+                        ),
+                        audioOptions = emptyList(),
+                        directVideoUrl = videoUrl,
+                        sanitizedTitle = sanitizeTitle(title, platform),
+                    )
+                }
+
+                if (!imgUrl.isNullOrBlank() && imgUrl.startsWith("http")) {
+                    return@runCatching MediaPreview(
+                        mediaId = url.hashCode().toString(),
+                        url = url,
+                        title = title,
+                        author = platform,
+                        platform = "$platform · IMAGE",
+                        durationText = "1 image",
+                        thumbnailUrl = imgUrl,
+                        videoOptions = emptyList(),
+                        audioOptions = emptyList(),
+                        imageUrls = listOf(imgUrl),
+                        sanitizedTitle = sanitizeTitle(title, platform),
+                    )
+                }
+                null
+            }.onFailure { err ->
+                DiagnosticLog.log("WebMetaErr", err.message ?: err::class.java.simpleName)
+            }.getOrNull()
+
+            if (preview != null) return preview
         }
-        val html = conn.inputStream.bufferedReader().use { it.readText().take(768 * 1024) }
-        conn.disconnect()
-
-        val meta = mutableMapOf<String, String>()
-        ogTagRegex.findAll(html).forEach { m ->
-            val key = (m.groupValues[1].ifEmpty { m.groupValues[4] }).lowercase(Locale.US)
-            val valText = decodeHtml(m.groupValues[2].ifEmpty { m.groupValues[3] }).trim()
-            if (key.isNotEmpty() && valText.isNotEmpty() && key !in meta) {
-                meta[key] = valText
-            }
-        }
-
-        val platform = detectPlatformName(url).uppercase(Locale.US)
-        val title = decodeHtml(meta["og:title"] ?: meta["twitter:title"] ?: "$platform post")
-        val imgUrl = meta["og:image:secure_url"] ?: meta["og:image"] ?: meta["twitter:image"]
-
-        // Check video metadata FIRST (crucial for Threads videos!)
-        val videoUrl = (meta["og:video:secure_url"] ?: meta["og:video"] ?: meta["twitter:player:stream"])
-            ?.takeIf { it.startsWith("http") }
-            ?: Regex(""""video_url"\s*:\s*"(https?:[^"]+)"""")
-                .find(html)?.groupValues?.getOrNull(1)?.unescapeJsonUrl()
-            ?: Regex(""""video_versions"\s*:\s*\[\s*\{[^}]*"url"\s*:\s*"(https?:[^"]+)"""")
-                .find(html)?.groupValues?.getOrNull(1)?.unescapeJsonUrl()
-            ?: Regex("""<video[^>]+src=["'](https?://[^"']+)["']""", RegexOption.IGNORE_CASE)
-                .find(html)?.groupValues?.getOrNull(1)?.replace("&amp;", "&")
-
-        if (!videoUrl.isNullOrBlank()) {
-            val size = probeUrlSize(videoUrl)
-            return@runCatching MediaPreview(
-                mediaId = url.hashCode().toString(),
-                url = url,
-                title = title,
-                author = platform,
-                platform = "$platform · VIDEO",
-                durationText = "",
-                thumbnailUrl = imgUrl,
-                videoOptions = listOf(
-                    VideoOption(1080, "Original", "HD", "MP4 · Direct stream", size),
-                ),
-                audioOptions = emptyList(),
-                directVideoUrl = videoUrl,
-                sanitizedTitle = sanitizeTitle(title, platform),
-            )
-        }
-
-        if (imgUrl.isNullOrBlank() || !imgUrl.startsWith("http")) return@runCatching null
-
-        MediaPreview(
-            mediaId = url.hashCode().toString(),
-            url = url,
-            title = title,
-            author = platform,
-            platform = "$platform · IMAGE",
-            durationText = "1 image",
-            thumbnailUrl = imgUrl,
-            videoOptions = emptyList(),
-            audioOptions = emptyList(),
-            imageUrls = listOf(imgUrl),
-            sanitizedTitle = sanitizeTitle(title, platform),
-        )
-    }.getOrNull()
+        return null
+    }
 
     private fun detectPlatformName(url: String): String {
         val lower = url.lowercase(Locale.US)

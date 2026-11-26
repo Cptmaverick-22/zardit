@@ -6,6 +6,7 @@ import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import io.github.cptmaverick_22.zardit.ZarditApp
+import io.github.cptmaverick_22.zardit.data.DiagnosticLog
 import io.github.cptmaverick_22.zardit.data.HistoryItem
 import io.github.cptmaverick_22.zardit.data.HistoryStore
 import io.github.cptmaverick_22.zardit.data.InstagramAuth
@@ -405,6 +406,12 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
                 .getOrElse { err -> "Update failed: ${err.message}" }
             _uiState.update { it.copy(isUpdatingYtDlp = false, updateBanner = msg) }
         }
+    }
+
+    fun buildDiagnosticReport(): String = DiagnosticLog.buildReport(app)
+
+    fun showDiagnosticsCopiedBanner() {
+        _uiState.update { it.copy(updateBanner = "Diagnostics copied to clipboard.") }
     }
 
     fun removeHistoryItem(item: HistoryItem, deleteFile: Boolean) {

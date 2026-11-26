@@ -12,6 +12,7 @@ import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import io.github.cptmaverick_22.zardit.MainActivity
 import io.github.cptmaverick_22.zardit.R
+import io.github.cptmaverick_22.zardit.data.DiagnosticLog
 import io.github.cptmaverick_22.zardit.data.HistoryItem
 import io.github.cptmaverick_22.zardit.data.HistoryStore
 import io.github.cptmaverick_22.zardit.data.ZarditPrefs
@@ -302,6 +303,7 @@ class DownloadService : Service() {
                 }
             } catch (t: Throwable) {
                 if (!cancelled.get()) {
+                    DiagnosticLog.log("DownloadErr", t.message ?: t::class.java.simpleName)
                     val msg = t.message?.take(200) ?: "Download failed."
                     _state.value = DownloadState.Failed(msg)
                     val mgr = getSystemService(NotificationManager::class.java)

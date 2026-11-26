@@ -76,6 +76,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -398,6 +399,15 @@ fun MainScreen(
                                 color = MaterialTheme.colorScheme.primary,
                                 style = MaterialTheme.typography.bodySmall,
                             )
+                            OutlinedButton(
+                                onClick = {
+                                    clipboard.setText(AnnotatedString(viewModel.buildDiagnosticReport()))
+                                    viewModel.showDiagnosticsCopiedBanner()
+                                },
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                            ) {
+                                Text("Copy Diagnostics", style = MaterialTheme.typography.labelMedium)
+                            }
                         }
                     }
                 }
@@ -817,6 +827,15 @@ fun MainScreen(
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.primary,
                                 )
+                                OutlinedButton(
+                                    onClick = {
+                                        clipboard.setText(AnnotatedString(viewModel.buildDiagnosticReport()))
+                                        viewModel.showDiagnosticsCopiedBanner()
+                                    },
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                ) {
+                                    Text("Copy Diagnostics", style = MaterialTheme.typography.labelMedium)
+                                }
                             }
 
                             DownloadState.Cancelled -> {
