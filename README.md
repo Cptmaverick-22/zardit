@@ -103,7 +103,7 @@ Download `Zardit-<version>-android-arm64.apk` from [GitHub Releases](https://git
 2. Grant notification permission when asked (used for background foreground-service progress notifications).
 3. Verify `SHA256SUMS.txt` if desired before installing.
 
-> **Note:** Android releases target `arm64-v8a` devices and currently use the standard Android release build without bundling FFmpeg (~30–40 MB install).
+> **Note:** Android releases target `arm64-v8a` devices and ship a lightweight build using Android's native `MediaMuxer` without bundling FFmpeg.
 
 ---
 
@@ -310,7 +310,7 @@ Titles are sanitized across Linux, Windows, macOS, and Android SAF (`:` -> ` -`,
 ## 🔒 Privacy
 
 - No Zardit accounts, analytics, telemetry, or usage tracking.
-- Network requests go only to the media source and official update endpoints (PyPI for desktop `yt-dlp` checks; GitHub/`youtubedl-android` updater endpoints when manually updating the Android engine).
+- Network requests go only to the media source and official update endpoints (PyPI for desktop `yt-dlp` checks, or when manually triggering an in-app Android engine update).
 - On Android, optional Instagram sign-in stores only minimal session cookies (`sessionid`, `csrftoken`, `ds_user_id`) encrypted locally using **Android Keystore (`AES/GCM/NoPadding`)** — credentials never leave your device except to Instagram itself, and can be cleared with one tap.
 - Share-tracking query parameters (such as `si=`, `utm_source=`) are stripped in logs, and desktop diagnostics replace your home directory with `~`.
 
