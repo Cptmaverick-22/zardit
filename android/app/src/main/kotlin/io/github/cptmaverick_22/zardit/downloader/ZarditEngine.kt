@@ -127,13 +127,17 @@ object ZarditEngine {
             val tier = classifyVideoTier(f.width, f.height, note, heightBuckets) ?: continue
             val isMp4 = ext == "mp4"
             val isH264 = vcodec.startsWith("avc1", ignoreCase = true) || vcodec.startsWith("h264", ignoreCase = true)
+            val isHevc = vcodec.startsWith("hev1", ignoreCase = true) || vcodec.startsWith("hvc1", ignoreCase = true)
             val isMuxed = f.acodec != "none" && !f.acodec.isNullOrBlank()
             val needsMux = !isMuxed
 
-            // Score: MP4 first, H.264 preferred for <=1080p, muxed preferred if <=720p, higher bitrate/size wins
+            // Without FFmpeg, video-only DASH streams can only be muxed into MP4 if H.264 or HEVC
+            if (needsMux && !(isMp4 && (isH264 || isHevc))) continue
+
+            // Score: pre-muxed MP4 first or H.264 MP4, higher bitrate/size wins
             val score = (if (isMp4) 10_000 else 0) +
-                (if (tier <= 1080 && isH264) 2_000 else if (tier > 1080) 500 else 0) +
-                (if (isMuxed) 500 else 0) +
+                (if (isH264) 2_000 else if (isHevc) 1_000 else 0) +
+                (if (isMuxed) 800 else 0) +
                 f.tbr.toInt().coerceIn(0, 400)
 
             var videoBytes = f.fileSize.coerceAtLeast(f.fileSizeApproximate)
@@ -145,8 +149,8 @@ object ZarditEngine {
             if (existing == null || score > existing.first) {
                 val approx = if (videoBytes > 0L) videoBytes + (if (needsMux) bestAudioSize else 0L) else null
                 val codecHint = when {
-                    tier >= 1440 -> "MP4 · AV1/VP9"
                     isH264 -> "MP4 · H.264"
+                    isHevc -> "MP4 · HEVC"
                     else -> "${ext.uppercase(Locale.US).ifBlank { "MP4" }} · Video"
                 }
                 val opt = VideoOption(
@@ -178,7 +182,7 @@ object ZarditEngine {
             }
 
         val isPureImage = (info.ext?.lowercase(Locale.US) in imageExts) ||
-            (videoOptions.isEmpty() && formats.none { it.vcodec != "none" && it.vcodec != null })
+            (videoOptions.isEmpty() && formats.none { it.vcodec != "none" && it.vcodec != null && it.ext != "mhtml" })
 
         val imageUrls = buildList {
             if (isPureImage && !info.url.isNullOrBlank() && info.url!!.startsWith("http")) {
@@ -189,11 +193,27 @@ object ZarditEngine {
         }
 
         if (videoOptions.isEmpty() && !isPureImage) {
-            val probeTarget = formats.lastOrNull { !it.url.isNullOrBlank() && it.url!!.startsWith("http") }?.url
+            // Pre-muxed MP4 fallback (e.g. Instagram/Facebook formats with width=None, height=None like format "1")
+            val preMuxed = formats.firstOrNull { f ->
+                (f.ext ?: "").equals("mp4", ignoreCase = true) &&
+                    f.vcodec.isNullOrBlank() && f.acodec.isNullOrBlank() &&
+                    !f.url.isNullOrBlank()
+            } ?: formats.lastOrNull { f ->
+                (f.ext ?: "").equals("mp4", ignoreCase = true) && !f.url.isNullOrBlank()
+            }
+            val probeTarget = preMuxed?.url?.takeIf { it.startsWith("http") }
                 ?: info.url?.takeIf { it.startsWith("http") }
             val fallbackSize = probeTarget?.let { probeUrlSize(it) }
             videoOptions = listOf(
-                VideoOption(1080, "Original", "MP4", "Best available stream", fallbackSize),
+                VideoOption(
+                    height = 0,
+                    label = "Original",
+                    badge = "MP4",
+                    codecHint = "MP4 · H.264 + AAC",
+                    approxSizeBytes = fallbackSize,
+                    formatId = preMuxed?.formatId?.takeIf { it.isNotBlank() },
+                    needsAudioMux = false,
+                ),
             )
         }
 
@@ -626,21 +646,27 @@ object ZarditEngine {
                     val bestByBucket = mutableMapOf<Int, VideoOption>()
                     for (i in 0 until formatsArr.length()) {
                         val f = formatsArr.optJSONObject(i) ?: continue
-                        if (f.optString("vcodec") == "none") continue
+                        val vcodec = f.optString("vcodec")
+                        val ext = f.optString("ext").lowercase(Locale.US)
+                        if (vcodec == "none" || ext != "mp4") continue
+                        val needsAudio = f.optString("acodec") == "none"
+                        val isH264 = vcodec.startsWith("avc1", ignoreCase = true) || vcodec.startsWith("h264", ignoreCase = true)
+                        val isHevc = vcodec.startsWith("hev1", ignoreCase = true) || vcodec.startsWith("hvc1", ignoreCase = true)
+                        if (needsAudio && !(isH264 || isHevc)) continue
+
                         val eh = effectiveVideoHeight(f.optInt("width", 0), f.optInt("height", 0))
                         val bucket = buckets.firstOrNull { eh in (it - 20)..(it + 20) } ?: continue
                         val fmtUrl = f.optString("url").takeIf { it.startsWith("http") }
                         val rawSize = f.optLong("filesize", 0L).takeIf { it > 0L }
                             ?: f.optLong("filesize_approx", 0L).takeIf { it > 0L }
                             ?: fmtUrl?.let { probeUrlSize(it) }
-                        val needsAudio = f.optString("acodec") == "none"
                         val totalSize = rawSize?.let { it + (if (needsAudio) bestAudioSize else 0L) } ?: probedSize
                         val fId = f.optString("format_id").takeIf { it.isNotBlank() }
                         val candidate = VideoOption(
                             bucket,
                             "${bucket}p",
                             qualityBadge(bucket),
-                            "MP4 · H.264",
+                            if (isH264) "MP4 · H.264" else "MP4 · HEVC",
                             totalSize,
                             formatId = fId,
                             needsAudioMux = needsAudio,
@@ -653,7 +679,24 @@ object ZarditEngine {
                     addAll(bestByBucket.values.sortedByDescending { it.height })
                 }
                 if (isEmpty()) {
-                    add(VideoOption(1080, "Original", "MP4", "Best available stream", probedSize))
+                    var fallbackId: String? = null
+                    var fallbackSize = probedSize
+                    if (formatsArr != null) {
+                        for (i in 0 until formatsArr.length()) {
+                            val f = formatsArr.optJSONObject(i) ?: continue
+                            if (f.optString("ext").equals("mp4", true) &&
+                                f.optString("acodec") != "none" &&
+                                !f.optString("url").isNullOrBlank()
+                            ) {
+                                fallbackId = f.optString("format_id").takeIf { it.isNotBlank() }
+                                fallbackSize = f.optLong("filesize", 0L).takeIf { it > 0L }
+                                    ?: f.optString("url").takeIf { it.startsWith("http") }?.let { probeUrlSize(it) }
+                                    ?: fallbackSize
+                                break
+                            }
+                        }
+                    }
+                    add(VideoOption(0, "Original", "MP4", "MP4 · H.264 + AAC", fallbackSize, formatId = fallbackId, needsAudioMux = false))
                 }
             },
             audioOptions = defaultAudioOptions.map { opt ->
@@ -811,6 +854,11 @@ object ZarditEngine {
 
                 if (!videoUrl.isNullOrBlank()) {
                     val size = probeUrlSize(videoUrl)
+                    val origW = Regex(""""original_width"\s*:\s*(\d+)""").find(html)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
+                    val origH = Regex(""""original_height"\s*:\s*(\d+)""").find(html)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
+                    val resTier = if (origW > 0 && origH > 0) minOf(origW, origH) else 0
+                    val resLabel = if (resTier > 0) "${resTier}p" else "Original"
+                    val resBadge = if (resTier > 0) qualityBadge(resTier).ifEmpty { "MP4" } else "MP4"
                     return@runCatching MediaPreview(
                         mediaId = url.hashCode().toString(),
                         url = url,
@@ -820,7 +868,7 @@ object ZarditEngine {
                         durationText = "",
                         thumbnailUrl = imgUrl,
                         videoOptions = listOf(
-                            VideoOption(1080, "Original", "MP4", "Direct stream", size),
+                            VideoOption(resTier, resLabel, resBadge, "MP4 · Direct stream", size),
                         ),
                         audioOptions = emptyList(),
                         directVideoUrl = videoUrl,
@@ -1013,7 +1061,7 @@ object ZarditEngine {
         audioOption: AudioOption?,
         imageFormat: ImageFormat = ImageFormat.ORIGINAL,
     ): String = when (mode) {
-        DownloadMode.VIDEO -> "${videoHeight ?: 1080}p"
+        DownloadMode.VIDEO -> if (videoHeight != null && videoHeight > 0) "${videoHeight}p" else "original"
         DownloadMode.AUDIO -> if (audioOption?.isOriginal == true) "original" else "compact"
         DownloadMode.IMAGE -> imageFormat.id
     }
@@ -1195,7 +1243,7 @@ object ZarditEngine {
                 }
                 runRequest(exactReq)
                 val out = workDir.listFiles()
-                    ?.filter { it.isFile && !it.name.endsWith(".part") && !it.name.endsWith(".ytdl") }
+                    ?.filter { it.isFile && it.length() > 1024L && !it.name.endsWith(".part") && !it.name.endsWith(".ytdl") }
                     ?.maxByOrNull { it.length() }
                 if (out != null) return saveOutputFile(context, out, mode, treeUri)
             }
@@ -1210,7 +1258,7 @@ object ZarditEngine {
                         if (!formatId.isNullOrBlank()) {
                             addOption("-f", formatId)
                         } else {
-                            addOption("-f", "bestvideo[ext=mp4]")
+                            addOption("-f", "bestvideo[ext=mp4][vcodec^=avc1]/bestvideo[ext=mp4][vcodec^=hev1]/bestvideo[ext=mp4][vcodec^=hvc1]")
                             addOption("-S", "res:$h,proto,vcodec:h264")
                         }
                         addOption("-o", vidTemp.absolutePath)
@@ -1225,7 +1273,7 @@ object ZarditEngine {
                     }
                     runRequest(audReq)
 
-                    if (vidTemp.isFile && vidTemp.length() > 0L && audTemp.isFile && audTemp.length() > 0L) {
+                    if (vidTemp.isFile && vidTemp.length() > 1024L && audTemp.isFile && audTemp.length() > 1024L) {
                         onProgress(95f, ZarditFlavor.formatProgressLine("ffmpeg", 95f))
                         val id = Regex("""(?:v=|youtu\.be/|shorts/|reel/|p/)([A-Za-z0-9_-]{6,})""")
                             .find(url)?.groupValues?.getOrNull(1) ?: url.hashCode().toString()
@@ -1249,15 +1297,17 @@ object ZarditEngine {
                 addOption("--no-playlist")
                 addOption("--no-mtime")
                 addOption("-f", "best[ext=mp4]/best")
-                addOption("-S", "res:$h,proto,vcodec:h264")
+                if (h > 0) {
+                    addOption("-S", "res:$h,proto,vcodec:h264")
+                }
                 addOption("-o", "${workDir.absolutePath}/$titleTemplate [$qTag] [%(id)s].%(ext)s")
             }
             runRequest(singleReq)
 
             val outputFile = workDir.listFiles()
-                ?.filter { it.isFile && !it.name.endsWith(".part") && !it.name.endsWith(".ytdl") }
+                ?.filter { it.isFile && it.length() > 1024L && !it.name.endsWith(".part") && !it.name.endsWith(".ytdl") }
                 ?.maxByOrNull { it.length() }
-                ?: error("Download finished, but no output file was found.")
+                ?: error("Download finished, but the output file was empty or missing.")
 
             return saveOutputFile(context, outputFile, mode, treeUri)
         } finally {
