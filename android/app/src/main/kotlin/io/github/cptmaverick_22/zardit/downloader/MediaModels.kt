@@ -30,6 +30,8 @@ data class VideoOption(
     val badge: String,
     val codecHint: String,
     val approxSizeBytes: Long?,
+    val formatId: String? = null,
+    val needsAudioMux: Boolean = false,
 )
 
 data class AudioOption(

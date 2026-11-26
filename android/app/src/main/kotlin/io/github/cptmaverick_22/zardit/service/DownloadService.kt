@@ -73,6 +73,8 @@ class DownloadService : Service() {
                 val directVideoUrl = intent.getStringExtra(EXTRA_DIRECT_VIDEO_URL)
                 val useInstagramCookies = intent.getBooleanExtra(EXTRA_USE_IG_COOKIES, false)
                 val customTitle = intent.getStringExtra(EXTRA_CUSTOM_TITLE)
+                val formatId = intent.getStringExtra(EXTRA_FORMAT_ID)
+                val needsAudioMux = intent.getBooleanExtra(EXTRA_NEEDS_AUDIO_MUX, false)
 
                 startDownload(
                     url = url,
@@ -90,6 +92,8 @@ class DownloadService : Service() {
                     directVideoUrl = directVideoUrl,
                     useInstagramCookies = useInstagramCookies,
                     customTitle = customTitle,
+                    formatId = formatId,
+                    needsAudioMux = needsAudioMux,
                 )
             }
         }
@@ -112,6 +116,8 @@ class DownloadService : Service() {
         directVideoUrl: String?,
         useInstagramCookies: Boolean,
         customTitle: String?,
+        formatId: String?,
+        needsAudioMux: Boolean,
     ) {
         ensureNotificationChannel()
         cancelled.set(false)
@@ -281,6 +287,8 @@ class DownloadService : Service() {
                     directVideoUrl = directVideoUrl,
                     useInstagramCookies = useInstagramCookies,
                     customTitle = customTitle,
+                    formatId = formatId,
+                    needsAudioMux = needsAudioMux,
                 ) { pct, statusLine ->
                     updateProgress(title, pct, statusLine)
                 }
@@ -441,6 +449,8 @@ class DownloadService : Service() {
         private const val EXTRA_DIRECT_VIDEO_URL = "extra_direct_video_url"
         private const val EXTRA_USE_IG_COOKIES = "extra_use_ig_cookies"
         private const val EXTRA_CUSTOM_TITLE = "extra_custom_title"
+        private const val EXTRA_FORMAT_ID = "extra_format_id"
+        private const val EXTRA_NEEDS_AUDIO_MUX = "extra_needs_audio_mux"
 
         private val _state = MutableStateFlow<DownloadState>(DownloadState.Idle)
         val state: StateFlow<DownloadState> = _state.asStateFlow()
@@ -468,6 +478,8 @@ class DownloadService : Service() {
             directVideoUrl: String? = null,
             useInstagramCookies: Boolean = false,
             customTitle: String? = null,
+            formatId: String? = null,
+            needsAudioMux: Boolean = false,
         ) {
             val intent = Intent(context, DownloadService::class.java).apply {
                 action = ACTION_START
@@ -486,6 +498,8 @@ class DownloadService : Service() {
                 putExtra(EXTRA_DIRECT_VIDEO_URL, directVideoUrl)
                 putExtra(EXTRA_USE_IG_COOKIES, useInstagramCookies)
                 putExtra(EXTRA_CUSTOM_TITLE, customTitle)
+                putExtra(EXTRA_FORMAT_ID, formatId)
+                putExtra(EXTRA_NEEDS_AUDIO_MUX, needsAudioMux)
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)

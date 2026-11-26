@@ -358,6 +358,7 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
             preview.imageUrls
         }
 
+        val selectedVidOpt = preview.videoOptions.firstOrNull { it.height == current.selectedVideoHeight }
         DownloadService.start(
             context = app,
             url = preview.url,
@@ -372,6 +373,8 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
             directVideoUrl = preview.directVideoUrl,
             useInstagramCookies = preview.usedInstagramAuth,
             customTitle = preview.sanitizedTitle,
+            formatId = selectedVidOpt?.formatId,
+            needsAudioMux = selectedVidOpt?.needsAudioMux ?: false,
         )
     }
 
