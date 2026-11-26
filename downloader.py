@@ -367,8 +367,8 @@ _ERRNO_MESSAGES = {
 _ERROR_RULES = [
     (re.compile(p, re.IGNORECASE), text) for p, text in (
         (r"confirm your age|age[- ]restricted|age verification",
-         "This video is age-restricted and needs a signed-in account, "
-         "which this app doesn't support yet."),
+         "This video is age-restricted and requires a signed-in account. "
+         "For Instagram, click IG in the top bar (or choose [G] in the CLI)."),
         (r"not a bot",
          "The site is asking to confirm you're not a bot. Wait a while, "
          "update yt-dlp, or try another network."),
@@ -377,8 +377,7 @@ _ERROR_RULES = [
         (r"private video|private post",
          "This video or post is private."),
         (r"sign in|log in|login required|login_required|cookies|empty media response",
-         "This post or video needs a signed-in account, "
-         "which Zardit doesn't support yet."),
+         "This post or video requires a signed-in account."),
         (r"in your country|geo[- ]?restrict|not made this video available"
          r"|available in your region",
          "This video isn't available in your country."),
@@ -449,6 +448,39 @@ def friendly_error(error):
             "Could not read Instagram cookies from your browser (the browser may "
             "encrypt cookies on this OS or is not installed). Try Firefox, or use "
             "IG -> Paste Page Source (offline)."
+        )
+
+    is_ig_auth = any(
+        tok in low_msg
+        for tok in (
+            "instagram",
+            "registered users",
+            "empty media response",
+        )
+    ) and any(
+        tok in low_msg
+        for tok in (
+            "login",
+            "sign in",
+            "log in",
+            "registered users",
+            "empty media response",
+            "not granting access",
+            "cookies",
+            "private",
+        )
+    )
+    if is_ig_auth:
+        if get_ig_browser():
+            return (
+                "Instagram refused access with the connected browser cookies. "
+                "Make sure you're logged into an account that follows this profile, "
+                "or click IG -> Paste Page Source (offline)."
+            )
+        return (
+            "This Instagram post is private or requires sign-in. Click IG in the "
+            "top bar (or choose [G] in the CLI) to connect a browser or paste the "
+            "Page Source offline."
         )
 
     for pattern, text in _ERROR_RULES:
@@ -774,6 +806,41 @@ def _ig_formats_from_media_item(item, ig_headers):
     return formats
 
 
+def _clean_ig_title(raw_title, username=None, media_id="ig"):
+    """Collapse multi-line Instagram captions and strip hashtag walls for clean display & filenames."""
+
+    text = re.sub(r"\s+", " ", (raw_title or "")).strip()
+    # Strip Instagram og:description boilerplate: "12 likes, 0 comments - user on Date: "caption""
+    m = re.match(
+        r"^(?:\d[\d,.]*\s+likes?(?:,\s*\d[\d,.]*\s+comments?)?\s*-\s*[^:]+:\s*)(.+)$",
+        text,
+        re.IGNORECASE,
+    )
+    if m:
+        text = m.group(1).strip()
+    # Strip "Display Name on Instagram: "caption"" wrapper
+    m2 = re.match(r"^[^:\n]{1,60}\s+on\s+Instagram:\s*(.+)$", text, re.IGNORECASE)
+    if m2:
+        text = m2.group(1).strip()
+    text = text.strip('"\'“” .')
+
+    # Drop trailing hashtag walls (#tag1 #tag2 ...) when prose exists before them
+    no_tags = re.sub(r"(?:\s+#[A-Za-z0-9_]+){2,}\.?$", "", text).strip(" .")
+    if no_tags:
+        text = no_tags
+    elif text.startswith("#"):
+        text = ""
+
+    if len(text) > 90:
+        text = text[:89].rstrip(" ,;:-") + "…"
+
+    if text:
+        return text
+    if username and username != "Instagram":
+        return f"Video by {username}"
+    return f"Instagram Post ({media_id})"
+
+
 def parse_instagram_source(raw_text, source_url=None):
     """Extract downloadable video, image, or carousel locally from pasted HTML or JSON.
 
@@ -801,6 +868,17 @@ def parse_instagram_source(raw_text, source_url=None):
         r"instagram\.com/(?:reel|reels|p|tv)/([A-Za-z0-9_-]+)", clean_url
     )
     shortcode = sc_match.group(1) if sc_match else None
+
+    def _build_alt_ids(primary_id, *extra_ids):
+        alts = []
+        candidates = [primary_id, *extra_ids]
+        for cid in candidates:
+            if isinstance(cid, str) and cid:
+                if cid not in alts and cid != primary_id:
+                    alts.append(cid)
+                if len(cid) >= 30 and cid[:11] not in alts and cid[:11] != primary_id:
+                    alts.append(cid[:11])
+        return alts
 
     # 1. Try structured ?__a=1&__d=dis JSON directly.
     if text.lstrip().startswith("{"):
@@ -833,11 +911,13 @@ def parse_instagram_source(raw_text, source_url=None):
                         item = edges[0]
 
             if item is not None:
+                item_code = (item.get("code") or item.get("shortcode") or "").strip()
                 media_id = (
-                    item.get("code")
+                    item_code
                     or shortcode
                     or str(item.get("pk") or item.get("id") or "ig_private")
                 ).split("_", 1)[0]
+                alt_ids = _build_alt_ids(media_id, shortcode, item_code)
                 caption_obj = item.get("caption")
                 raw_title = (
                     caption_obj.get("text")
@@ -851,11 +931,17 @@ def parse_instagram_source(raw_text, source_url=None):
                     if cap_edges and isinstance(cap_edges[0], dict):
                         raw_title = (cap_edges[0].get("node") or {}).get("text")
                 author = (
-                    (item.get("user") or {}).get("username")
+                    (item.get("user") or {}).get("full_name")
+                    or (item.get("user") or {}).get("username")
+                    or (item.get("owner") or {}).get("full_name")
                     or (item.get("owner") or {}).get("username")
                     or "Instagram"
                 )
-                title = (raw_title or f"Instagram Post ({media_id})").strip()
+                username = (
+                    (item.get("user") or {}).get("username")
+                    or (item.get("owner") or {}).get("username")
+                )
+                title = _clean_ig_title(raw_title, username=username or author, media_id=media_id)
                 post_url = (
                     clean_url
                     if shortcode
@@ -867,6 +953,10 @@ def parse_instagram_source(raw_text, source_url=None):
                         duration = int(float(duration))
                     except (TypeError, ValueError):
                         duration = None
+                upload_date = None
+                taken_at = item.get("taken_at") or item.get("taken_at_timestamp")
+                if isinstance(taken_at, (int, float)) and taken_at > 1_000_000_000:
+                    upload_date = time.strftime("%Y%m%d", time.gmtime(int(taken_at)))
 
                 # Carousel slides (carousel_media or GraphQL edge_sidecar_to_children)
                 raw_slides = item.get("carousel_media") or [
@@ -895,6 +985,7 @@ def parse_instagram_source(raw_text, source_url=None):
                         if slide_fmts:
                             entries.append({
                                 "id": slide_id,
+                                "_alt_ids": _build_alt_ids(slide_id),
                                 "title": f"Slide {idx}",
                                 "uploader": author,
                                 "thumbnail": img_u,
@@ -942,9 +1033,11 @@ def parse_instagram_source(raw_text, source_url=None):
                 if fmts:
                     return {
                         "id": media_id,
+                        "_alt_ids": alt_ids,
                         "title": title,
                         "uploader": author,
                         "duration": duration,
+                        "upload_date": upload_date,
                         "thumbnail": thumb_u,
                         "webpage_url": post_url,
                         "original_url": post_url,
@@ -986,71 +1079,114 @@ def parse_instagram_source(raw_text, source_url=None):
     sc2 = re.search(
         r"instagram\.com/(?:reel|reels|p|tv)/([A-Za-z0-9_-]+)", resolved_url
     )
+    canon_sc = sc2.group(1) if sc2 else None
+    code_match = re.search(r'"code"\s*:\s*"([A-Za-z0-9_-]{6,64})"', text)
+    json_sc = code_match.group(1) if code_match else None
+
     media_id = (
-        (sc2.group(1) if sc2 else None)
-        or shortcode
+        shortcode
+        or canon_sc
+        or json_sc
         or hashlib.sha1(text[:4096].encode("utf-8", errors="ignore")).hexdigest()[:11]
     )
-    title = (
-        meta.get("og:description")
+    alt_ids = _build_alt_ids(media_id, canon_sc, json_sc)
+
+    search_windows = []
+    for focus_code in dict.fromkeys(c for c in (canon_sc, json_sc, media_id[:11]) if c):
+        for m in re.finditer(rf'"code"\s*:\s*"{re.escape(focus_code)}"', text):
+            search_windows.append(text[max(0, m.start() - 25000):min(len(text), m.end() + 25000)])
+    search_windows.append(text)
+
+    scoped = search_windows[0]
+    username_m = re.search(r'"username"\s*:\s*"([A-Za-z0-9_.]{1,40})"', scoped)
+    fullname_m = re.search(r'"full_name"\s*:\s*"((?:\\.|[^"\\])*)"', scoped)
+    username = username_m.group(1) if username_m else None
+    fullname = _decode_json_str(fullname_m.group(1)) if fullname_m else None
+    author = (fullname or "").strip() or username
+    if not author:
+        og_t = meta.get("og:title") or ""
+        author_m = re.match(r"^([^:(]+?)\s+(?:on Instagram|\(@)", og_t)
+        author = author_m.group(1).strip() if author_m else "Instagram"
+
+    dur_m = re.search(r'"video_duration"\s*:\s*([0-9]+(?:\.[0-9]+)?)', scoped)
+    duration = int(float(dur_m.group(1))) if dur_m else None
+    taken_m = re.search(r'"taken_at"\s*:\s*(\d{10})', scoped)
+    upload_date = (
+        time.strftime("%Y%m%d", time.gmtime(int(taken_m.group(1))))
+        if taken_m
+        else None
+    )
+
+    cap_m = re.search(r'"caption"\s*:\s*\{\s*"text"\s*:\s*"((?:\\.|[^"\\])*)"', scoped)
+    raw_caption = _decode_json_str(cap_m.group(1)) if cap_m else None
+    raw_title = (
+        raw_caption
+        or meta.get("og:description")
         or meta.get("og:title")
         or meta.get("twitter:title")
-        or f"Instagram Post ({media_id})"
-    ).strip()
+        or ""
+    )
+    title = _clean_ig_title(raw_title, username=username or author, media_id=media_id)
 
     formats = []
     seen_urls = set()
 
-    for dm in _THREADS_DASH_RE.finditer(text):
-        xml_str = _decode_json_str(dm.group(1))
-        for f in _parse_meta_dash_manifest(xml_str, ig_headers):
-            if f["url"] not in seen_urls:
-                seen_urls.add(f["url"])
-                formats.append(f)
+    for win in search_windows:
+        for dm in _THREADS_DASH_RE.finditer(win):
+            xml_str = _decode_json_str(dm.group(1))
+            for f in _parse_meta_dash_manifest(xml_str, ig_headers):
+                if f["url"] not in seen_urls:
+                    seen_urls.add(f["url"])
+                    formats.append(f)
+            if formats:
+                break
         if formats:
             break
 
-    for vm in _THREADS_VIDEO_VERSIONS_RE.finditer(text):
-        try:
-            versions = json.loads(vm.group(1))
-        except Exception:
+    for win in search_windows:
+        for vm in _THREADS_VIDEO_VERSIONS_RE.finditer(win):
             try:
-                versions = json.loads(_decode_json_str(vm.group(1).strip('"')))
+                versions = json.loads(vm.group(1))
             except Exception:
-                versions = None
-        if isinstance(versions, list):
-            for idx, v in enumerate(versions):
-                if not isinstance(v, dict):
-                    continue
-                v_url = v.get("url")
-                if (
-                    isinstance(v_url, str)
-                    and v_url.startswith("https://")
-                    and "rsrc.php" not in v_url.lower()
-                    and v_url not in seen_urls
-                ):
-                    seen_urls.add(v_url)
-                    vw = v.get("width")
-                    vh = v.get("height")
-                    formats.append({
-                        "format_id": f"ig-html-prog-{idx}",
-                        "url": v_url,
-                        "ext": "mp4",
-                        "protocol": "https",
-                        "vcodec": "h264",
-                        "acodec": "aac",
-                        "width": vw,
-                        "height": vh,
-                        "format_note": f"{min(vw, vh)}p" if (vw and vh) else "720p",
-                        "http_headers": dict(ig_headers),
-                    })
-            if any(f.get("acodec") != "none" for f in formats):
-                break
+                try:
+                    versions = json.loads(_decode_json_str(vm.group(1).strip('"')))
+                except Exception:
+                    versions = None
+            if isinstance(versions, list):
+                for idx, v in enumerate(versions):
+                    if not isinstance(v, dict):
+                        continue
+                    v_url = v.get("url")
+                    if (
+                        isinstance(v_url, str)
+                        and v_url.startswith("https://")
+                        and "rsrc.php" not in v_url.lower()
+                        and v_url not in seen_urls
+                    ):
+                        seen_urls.add(v_url)
+                        vw = v.get("width")
+                        vh = v.get("height")
+                        formats.append({
+                            "format_id": f"ig-html-prog-{idx}",
+                            "url": v_url,
+                            "ext": "mp4",
+                            "protocol": "https",
+                            "vcodec": "h264",
+                            "acodec": "aac",
+                            "width": vw,
+                            "height": vh,
+                            "format_note": f"{min(vw, vh)}p" if (vw and vh) else "720p",
+                            "http_headers": dict(ig_headers),
+                        })
+                if any(f.get("acodec") != "none" for f in formats):
+                    break
+        if any(f.get("acodec") != "none" for f in formats):
+            break
 
     if not any(f.get("vcodec") not in (None, "none") for f in formats):
         og_vid = meta.get("og:video:secure_url") or meta.get("og:video")
         cands = [og_vid] if og_vid else []
-        for vm in _THREADS_VIDEO_URL_RE.finditer(text):
+        for vm in _THREADS_VIDEO_URL_RE.finditer(scoped):
             cands.append(_decode_json_str(vm.group(1)))
         for cand in cands:
             if (
@@ -1075,7 +1211,7 @@ def parse_instagram_source(raw_text, source_url=None):
 
     img_urls = []
     seen_imgs = set()
-    for dm in re.finditer(r'"display_url"\s*:\s*"((?:\\.|[^"\\])*)"', text):
+    for dm in re.finditer(r'"display_url"\s*:\s*"((?:\\.|[^"\\])*)"', scoped):
         u = _decode_json_str(dm.group(1))
         if (
             u.startswith("https://")
@@ -1112,8 +1248,11 @@ def parse_instagram_source(raw_text, source_url=None):
                     break
         return {
             "id": media_id,
+            "_alt_ids": alt_ids,
             "title": title,
-            "uploader": meta.get("og:title") or "Instagram",
+            "uploader": author,
+            "duration": duration,
+            "upload_date": upload_date,
             "thumbnail": og_img or (img_urls[0] if img_urls else None),
             "webpage_url": resolved_url,
             "original_url": resolved_url,
@@ -1130,7 +1269,7 @@ def parse_instagram_source(raw_text, source_url=None):
                 "_zardit_media_kind": "image",
                 "id": f"{media_id}_{idx}",
                 "title": f"Photo {idx}",
-                "uploader": meta.get("og:title") or "Instagram",
+                "uploader": author,
                 "url": u,
                 "webpage_url": u,
                 "image_url": u,
@@ -1143,7 +1282,7 @@ def parse_instagram_source(raw_text, source_url=None):
         return _make_image_info(
             img_urls[0],
             title=title,
-            channel=meta.get("og:title") or "Instagram",
+            channel=author,
             media_id=media_id,
             headers=ig_headers,
         )
@@ -1688,6 +1827,11 @@ def available_qualities(info):
         else:
             other_video.add(label)
 
+    extractor = (info.get("extractor_key") or info.get("extractor") or "").lower()
+    if extractor and "youtube" not in extractor and (
+        mp4_labelled or mp4_guessed or other_video
+    ):
+        return sorted(mp4_labelled | mp4_guessed | other_video, reverse=True)
     return sorted(mp4_labelled or mp4_guessed or other_video, reverse=True)
 
 
@@ -2010,11 +2154,22 @@ def _image_ext_from_url(url):
 
 
 def _make_image_info(
-    url, title="", ext=None, size=None, channel="", media_id="", width=None, height=None
+    url, title="", ext=None, size=None, channel="", media_id="", width=None, height=None, headers=None
 ):
     ext = ext or _image_ext_from_url(url) or "jpg"
     vid = media_id or hashlib.sha1(url.encode("utf-8", errors="ignore")).hexdigest()[:11]
-    return {
+    fmt_entry = {
+        "format_id": "image",
+        "url": url,
+        "ext": ext,
+        "vcodec": "images",
+        "filesize": size,
+        "width": width,
+        "height": height,
+    }
+    if headers:
+        fmt_entry["http_headers"] = dict(headers)
+    info = {
         "_zardit_media_kind": "image",
         "id": vid,
         "title": title or Path(urlparse(url).path).stem or "Image",
@@ -2026,18 +2181,11 @@ def _make_image_info(
         "width": width,
         "height": height,
         "webpage_url": url,
-        "formats": [
-            {
-                "format_id": "image",
-                "url": url,
-                "ext": ext,
-                "vcodec": "images",
-                "filesize": size,
-                "width": width,
-                "height": height,
-            }
-        ],
+        "formats": [fmt_entry],
     }
+    if headers:
+        info["http_headers"] = dict(headers)
+    return info
 
 
 def _probe_direct_image(url):
@@ -2525,28 +2673,48 @@ def _check_disk_space(folder, expected_size, kind):
         )
 
 
-def find_existing_download(output_dir, video_id, extension, quality_label=None):
+def find_existing_download(
+    output_dir, video_id, extension, quality_label=None, alt_ids=None
+):
     """Find an earlier download of this video.
 
     extension is one extension or a list of them. With a quality_label, only
     that quality matches. Without one, any quality of the video matches.
+    alt_ids lets callers match aliases such as Instagram shortcodes vs share tokens.
     """
 
     extensions = (extension,) if isinstance(extension, str) else tuple(extension)
-    suffixes = []
+    cand_ids = []
+    for cid in (video_id, *(alt_ids or ())):
+        if isinstance(cid, str) and cid and cid not in cand_ids:
+            cand_ids.append(cid)
+            if len(cid) >= 30 and cid[:11] not in cand_ids:
+                cand_ids.append(cid[:11])
 
-    for ext in extensions:
-        if quality_label:
-            suffixes.append(f"[{quality_label}] [{video_id}].{ext}")
-            suffixes.append(f"[{video_id}] [{quality_label}].{ext}")
-        else:
-            suffixes.append(f"[{video_id}].{ext}")
+    suffixes = []
+    prefixes_with_quality = []
+    for cid in cand_ids:
+        for ext in extensions:
+            if quality_label:
+                suffixes.append(f"[{quality_label}] [{cid}].{ext}")
+                suffixes.append(f"[{cid}] [{quality_label}].{ext}")
+                if len(cid) >= 10:
+                    prefixes_with_quality.append((f"[{quality_label}] [{cid}", f"].{ext}"))
+            else:
+                suffixes.append(f"[{cid}].{ext}")
+                if len(cid) >= 10:
+                    prefixes_with_quality.append((f"[{cid}", f"].{ext}"))
 
     suffixes = tuple(suffixes)
 
     for file in output_dir.iterdir():
-        if file.is_file() and file.name.endswith(suffixes):
+        if not file.is_file():
+            continue
+        if file.name.endswith(suffixes):
             return file
+        for mid_marker, tail in prefixes_with_quality:
+            if mid_marker in file.name and file.name.endswith(tail):
+                return file
 
     return None
 
@@ -2805,14 +2973,14 @@ def _plan(kind, setting, ceiling):
         },
     }
 
-def _existing_result(folder, video_id, plan):
+def _existing_result(folder, video_id, plan, alt_ids=None):
     """A DownloadResult("exists") if this was downloaded before, else None."""
 
     if not video_id:
         return None
 
     existing = find_existing_download(
-        folder, video_id, plan["extension"], plan["quality_label"]
+        folder, video_id, plan["extension"], plan["quality_label"], alt_ids=alt_ids
     )
 
     if existing:
@@ -2846,8 +3014,9 @@ def _download(
             return DownloadResult("cancelled", folder)
 
         video_id = video_id or (info or {}).get("id")
+        alt_ids = (info or {}).get("_alt_ids")
 
-        found = _existing_result(folder, video_id, plan)
+        found = _existing_result(folder, video_id, plan, alt_ids=alt_ids)
 
         if found:
             return found
@@ -2855,8 +3024,9 @@ def _download(
         if info is None:
             info = fetch_video_info(url)
             video_id = info.get("id")
+            alt_ids = info.get("_alt_ids")
 
-            found = _existing_result(folder, video_id, plan)
+            found = _existing_result(folder, video_id, plan, alt_ids=alt_ids)
 
             if found:
                 return found
@@ -3034,7 +3204,7 @@ def download_image(
         quality_label = ORIGINAL_IMAGE if fmt == ORIGINAL_IMAGE else fmt
 
         existing = find_existing_download(
-            folder, media_id, target_ext, quality_label
+            folder, media_id, target_ext, quality_label, alt_ids=info.get("_alt_ids")
         )
         if existing:
             return DownloadResult("exists", folder, existing.name, existing)

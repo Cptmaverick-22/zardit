@@ -335,19 +335,38 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         if (preview.isPlaylist) {
             val selected = preview.playlistEntries.filter { it.index in current.selectedPlaylistIndices }
             if (selected.isEmpty()) return
-            DownloadService.start(
-                context = app,
-                url = preview.url,
-                mediaId = preview.mediaId,
-                title = preview.title,
-                platform = "$basePlatform · $mediaKind",
-                mode = current.downloadMode,
-                videoHeight = current.selectedVideoHeight,
-                audioId = current.selectedAudioId,
-                batchUrls = selected.map { it.url },
-                batchTitles = selected.map { it.title },
-                batchIds = selected.map { it.id },
-            )
+            if (current.downloadMode == DownloadMode.IMAGE) {
+                val withThumb = selected.filter { !it.thumbnailUrl.isNullOrBlank() }
+                if (withThumb.isEmpty()) return
+                DownloadService.start(
+                    context = app,
+                    url = preview.url,
+                    mediaId = preview.mediaId,
+                    title = preview.title,
+                    platform = "$basePlatform · IMAGE",
+                    mode = DownloadMode.IMAGE,
+                    videoHeight = null,
+                    audioId = null,
+                    imageFormat = current.selectedImageFormat,
+                    batchUrls = withThumb.map { it.thumbnailUrl!! },
+                    batchTitles = withThumb.map { it.title },
+                    batchIds = withThumb.map { it.id },
+                )
+            } else {
+                DownloadService.start(
+                    context = app,
+                    url = preview.url,
+                    mediaId = preview.mediaId,
+                    title = preview.title,
+                    platform = "$basePlatform · $mediaKind",
+                    mode = current.downloadMode,
+                    videoHeight = current.selectedVideoHeight,
+                    audioId = current.selectedAudioId,
+                    batchUrls = selected.map { it.url },
+                    batchTitles = selected.map { it.title },
+                    batchIds = selected.map { it.id },
+                )
+            }
             return
         }
 

@@ -852,6 +852,66 @@ class GuiInterfaceTests(unittest.TestCase):
             resolved = downloader._resolve_instagram_share_url("https://www.instagram.com/share/BAWRAVe3vK")
         self.assertEqual(resolved, "https://www.instagram.com/p/DbyevnHDzrM/")
 
+        # 5. Friendly Instagram guidance (when IG is Off vs Connected)
+        msg_off = downloader.friendly_error("ERROR: [Instagram] XYZ: This content is only available for registered users")
+        self.assertIn("Click IG", msg_off)
+        config.save_ig_browser("firefox")
+        msg_on = downloader.friendly_error("ERROR: [Instagram] XYZ: empty media response")
+        self.assertIn("Paste Page Source", msg_on)
+        config.save_ig_browser(None)
+
+        # 6. Clean title (no hashtag wall bloat), metadata, single image headers, & Option1/2 dedupe
+        caption_html = (
+            '<html><head>'
+            '<meta property="og:description" content="12 likes - sourasish_ain on Aug 6: &quot;Code. Compile. Evolve.\n\n#coding #viral #reels #hotwheels&quot;">'
+            '<meta property="og:image" content="https://scontent.cdninstagram.com/cover.jpg">'
+            '</head><body>'
+            '{"code":"DNRGa-5S8p7","username":"sourasish_ain","full_name":"Sourasish Ain",'
+            '"video_duration":28.0,"taken_at":1754470000,'
+            '"video_versions":[{"width":720,"height":1280,"url":"https://scontent.cdninstagram.com/v.mp4"}]}'
+            '</body></html>'
+        )
+        parsed_vid = downloader.parse_instagram_source(caption_html)
+        self.assertEqual(parsed_vid["title"], "Code. Compile. Evolve")
+        self.assertEqual(parsed_vid["uploader"], "Sourasish Ain")
+        self.assertEqual(parsed_vid["duration"], 28)
+        self.assertTrue(parsed_vid["upload_date"].isdigit())
+
+        # Option 1 saved a 39-char token; Option 2's 11-char shortcode must detect it
+        dl_dir = Path(self.temporary.name) / "ig_dedup"
+        dl_dir.mkdir(parents=True, exist_ok=True)
+        existing_file = dl_dir / "Video by sourasish_ain [720p] [DNRGa-5S8p7c933kqqQH1UK0cmn2PQCh3NlFSk0].mp4"
+        existing_file.write_bytes(b"mp4")
+        self.assertEqual(
+            downloader.find_existing_download(dl_dir, parsed_vid["id"], "mp4", "720p"),
+            existing_file,
+        )
+
+        # Non-YouTube unlabelled/WebM 1080p stays available alongside 720p labelled MP4
+        ig_mixed = {
+            "extractor_key": "Instagram",
+            "formats": [
+                {"ext": "mp4", "vcodec": "avc1", "width": 720, "height": 1280, "format_note": "720p"},
+                {"ext": "webm", "vcodec": "vp09", "width": 1080, "height": 1920},
+            ],
+        }
+        self.assertEqual(downloader.available_qualities(ig_mixed), [1080, 720])
+
+        # Single-photo ?__a=1 extraction with http_headers works without TypeError
+        single_photo_json = _json.dumps({
+            "items": [{
+                "code": "PrivPhoto1",
+                "caption": {"text": "Quiet view #nature #photo"},
+                "user": {"username": "alice"},
+                "image_versions2": {
+                    "candidates": [{"url": "https://scontent.cdninstagram.com/one.jpg", "width": 1080, "height": 1350}]
+                },
+            }]
+        })
+        photo_info = downloader.parse_instagram_source(single_photo_json)
+        self.assertEqual(photo_info["_zardit_media_kind"], "image")
+        self.assertIn("Referer", photo_info["http_headers"])
+
 
 class TerminalUiTests(unittest.TestCase):
     def setUp(self):

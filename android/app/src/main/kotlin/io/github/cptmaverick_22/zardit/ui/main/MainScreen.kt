@@ -429,7 +429,7 @@ fun MainScreen(
                                 AsyncImage(
                                     model = preview.thumbnailUrl,
                                     contentDescription = preview.title,
-                                    contentScale = if (preview.imageUrls.isNotEmpty()) ContentScale.Fit else ContentScale.Crop,
+                                    contentScale = if (preview.videoOptions.isEmpty() && preview.imageUrls.isNotEmpty()) ContentScale.Fit else ContentScale.Crop,
                                     modifier = Modifier
                                         .width(124.dp)
                                         .height(72.dp)
@@ -656,7 +656,7 @@ fun MainScreen(
                                         label = { Text(DownloadMode.AUDIO.label) },
                                     )
                                 }
-                                if (preview.imageUrls.isNotEmpty()) {
+                                if (preview.imageUrls.isNotEmpty() || (preview.isPlaylist && preview.playlistEntries.any { !it.thumbnailUrl.isNullOrBlank() })) {
                                     FilterChip(
                                         selected = ui.downloadMode == DownloadMode.IMAGE,
                                         onClick = { viewModel.onDownloadModeSelected(DownloadMode.IMAGE) },

@@ -2604,11 +2604,16 @@ class MainWindow(QWidget):
 
             self.type_badge.setText(f"{badge_prefix}VIDEO")
             self.title_label.setText(self.summary.title)
-            self.meta_label.setText(
-                f"{self.summary.channel}  ·  "
-                f"{format_duration(self.summary.duration)}  ·  "
-                f"{self.summary.upload_date}"
-            )
+            self.title_label.setToolTip(self.summary.title)
+            meta_bits = []
+            if self.summary.channel and self.summary.channel != "Unknown channel":
+                meta_bits.append(self.summary.channel)
+            dur_text = format_duration(self.summary.duration)
+            if dur_text and dur_text != "Unknown":
+                meta_bits.append(dur_text)
+            if self.summary.upload_date and self.summary.upload_date != "Unknown":
+                meta_bits.append(self.summary.upload_date)
+            self.meta_label.setText("  ·  ".join(meta_bits) if meta_bits else "Instagram / Web Media")
             self.show_thumbnail(thumbnail)
             if self.image_radio.isChecked():
                 self.video_radio.setChecked(True)

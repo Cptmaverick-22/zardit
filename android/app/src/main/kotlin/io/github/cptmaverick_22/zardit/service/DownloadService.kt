@@ -195,8 +195,8 @@ class DownloadService : Service() {
                 if (batchUrls.isNotEmpty()) {
                     var lastLocation = ""
                     var downloadedCount = 0
-                    val qTag = ZarditEngine.qualityTag(mode, videoHeight, audioOption)
-                    val ext = ZarditEngine.targetExtension(mode, audioOption)
+                    val qTag = ZarditEngine.qualityTag(mode, videoHeight, audioOption, imageFormat)
+                    val ext = ZarditEngine.targetExtension(mode, audioOption, imageFormat)
 
                     batchUrls.forEachIndexed { idx, itemUrl ->
                         if (cancelled.get()) return@launch
@@ -217,18 +217,31 @@ class DownloadService : Service() {
                             return@forEachIndexed
                         }
 
-                        val pid = UUID.randomUUID().toString()
-                        activeProcessId = pid
-                        val saved = ZarditEngine.download(
-                            context = applicationContext,
-                            url = itemUrl,
-                            mode = mode,
-                            videoHeight = videoHeight,
-                            audioOption = audioOption,
-                            treeUri = treeUri,
-                            processId = pid,
-                        ) { pct, status ->
-                            updateProgress(title, pct, "$prefix$status")
+                        val saved = if (mode == DownloadMode.IMAGE) {
+                            ZarditEngine.downloadImage(
+                                context = applicationContext,
+                                imageUrl = itemUrl,
+                                title = itemTitle,
+                                mediaId = itemId,
+                                format = imageFormat,
+                                treeUri = treeUri,
+                            ) { pct, status ->
+                                updateProgress(title, pct, "$prefix$status")
+                            }
+                        } else {
+                            val pid = UUID.randomUUID().toString()
+                            activeProcessId = pid
+                            ZarditEngine.download(
+                                context = applicationContext,
+                                url = itemUrl,
+                                mode = mode,
+                                videoHeight = videoHeight,
+                                audioOption = audioOption,
+                                treeUri = treeUri,
+                                processId = pid,
+                            ) { pct, status ->
+                                updateProgress(title, pct, "$prefix$status")
+                            }
                         }
                         downloadedCount++
                         lastLocation = saved.savedLocation
@@ -238,7 +251,7 @@ class DownloadService : Service() {
                                 mediaId = itemId,
                                 title = itemTitle,
                                 platform = platform,
-                                qualityLabel = qTag,
+                                qualityLabel = if (mode == DownloadMode.IMAGE) imageFormat.label else qTag,
                                 fileName = saved.fileName,
                                 savedLocation = saved.savedLocation,
                                 contentUri = saved.contentUri,

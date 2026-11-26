@@ -93,6 +93,7 @@ object ZarditEngine {
                     fetchInstagramViaWebView(context, cleanUrl)?.let { return it }
                 }
                 if (isNoVideo) {
+                    fetchInstagramEmbedFallback(cleanUrl)?.let { return it }
                     fetchImageFallback(context, cleanUrl, useIgCookies = false)?.let { return it }
                 }
                 fetchInstagramEmbedFallback(cleanUrl)?.let { return it }
@@ -211,8 +212,9 @@ object ZarditEngine {
         val imageUrls = buildList {
             if (isPureImage && !info.url.isNullOrBlank() && info.url!!.startsWith("http")) {
                 add(info.url!!)
-            } else if (isPureImage && !info.thumbnail.isNullOrBlank() && info.thumbnail!!.startsWith("http")) {
-                add(info.thumbnail!!)
+            } else {
+                val thumb = info.thumbnail?.takeIf { it.startsWith("http") }
+                if (thumb != null) add(thumb)
             }
         }
 
@@ -539,6 +541,7 @@ object ZarditEngine {
                     },
                     directVideoUrl = parsedDash.videoOptions.first().directUrl,
                     directAudioUrl = parsedDash.audioUrl,
+                    imageUrls = listOfNotNull(slideThumb),
                     usedInstagramAuth = usedAuth,
                     sanitizedTitle = sanitizeTitle(rawTitle, "Instagram_$shortcode"),
                 )
@@ -562,6 +565,7 @@ object ZarditEngine {
                     audioOptions = defaultAudioOptions.map {
                         it.copy(approxSizeBytes = size?.let { s -> (s / 5L).coerceAtLeast(80_000L) })
                     },
+                    imageUrls = listOfNotNull(slideThumb),
                     directVideoUrl = vidUrl,
                     usedInstagramAuth = usedAuth,
                     sanitizedTitle = sanitizeTitle(rawTitle, "Instagram_$shortcode"),
@@ -677,6 +681,7 @@ object ZarditEngine {
                         },
                         directVideoUrl = parsedDash.videoOptions.first().directUrl,
                         directAudioUrl = parsedDash.audioUrl,
+                        imageUrls = listOfNotNull(meta["og:image"]?.takeIf { it.startsWith("http") }),
                         usedInstagramAuth = usedAuth,
                         sanitizedTitle = sanitizeTitle(title, "Instagram_$shortcode"),
                     )
@@ -695,6 +700,7 @@ object ZarditEngine {
             ?: meta["og:video"]?.takeIf { it.startsWith("http") }
         if (!videoUrl.isNullOrBlank()) {
             val size = probeUrlSize(videoUrl)
+            val thumb = meta["og:image"]?.takeIf { it.startsWith("http") }
             return MediaPreview(
                 mediaId = shortcode,
                 url = url,
@@ -702,11 +708,12 @@ object ZarditEngine {
                 author = "Instagram",
                 platform = "INSTAGRAM · VIDEO",
                 durationText = "",
-                thumbnailUrl = meta["og:image"],
+                thumbnailUrl = thumb,
                 videoOptions = listOf(VideoOption(1080, "Original", "HD", "MP4 · Direct stream", size)),
                 audioOptions = defaultAudioOptions.map {
                     it.copy(approxSizeBytes = size?.let { s -> (s / 5L).coerceAtLeast(80_000L) })
                 },
+                imageUrls = listOfNotNull(thumb),
                 directVideoUrl = videoUrl,
                 usedInstagramAuth = usedAuth,
                 sanitizedTitle = sanitizeTitle(title, "Instagram_$shortcode"),
@@ -904,6 +911,15 @@ object ZarditEngine {
             }
         }
 
+        val domImages = obj.optJSONArray("images")
+        val domThumbs = if (domImages != null) {
+            (0 until domImages.length())
+                .mapNotNull { domImages.optString(it).takeIf { u -> u.startsWith("http") && !croppedUrlRegex.containsMatchIn(u) } }
+                .distinct()
+        } else {
+            emptyList()
+        }
+
         val domVideos = obj.optJSONArray("videos")
         if (domVideos != null && domVideos.length() > 0) {
             val vidUrl = (0 until domVideos.length())
@@ -912,6 +928,7 @@ object ZarditEngine {
             if (vidUrl != null) {
                 val size = probeUrlSize(vidUrl)
                 val title = obj.optString("title").ifBlank { "Instagram Reel ($shortcode)" }
+                val thumb = domThumbs.firstOrNull()
                 return MediaPreview(
                     mediaId = shortcode,
                     url = url,
@@ -919,11 +936,12 @@ object ZarditEngine {
                     author = "Instagram",
                     platform = "INSTAGRAM · VIDEO",
                     durationText = "",
-                    thumbnailUrl = null,
+                    thumbnailUrl = thumb,
                     videoOptions = listOf(VideoOption(1080, "Original", "HD", "MP4 · Direct stream", size)),
                     audioOptions = defaultAudioOptions.map {
                         it.copy(approxSizeBytes = size?.let { s -> (s / 5L).coerceAtLeast(80_000L) })
                     },
+                    imageUrls = listOfNotNull(thumb),
                     directVideoUrl = vidUrl,
                     usedInstagramAuth = true,
                     sanitizedTitle = sanitizeTitle(title, "Instagram_$shortcode"),
@@ -931,11 +949,8 @@ object ZarditEngine {
             }
         }
 
-        val domImages = obj.optJSONArray("images")
-        if (domImages != null && domImages.length() > 0) {
-            val imgs = (0 until domImages.length())
-                .mapNotNull { domImages.optString(it).takeIf { u -> u.startsWith("http") && !croppedUrlRegex.containsMatchIn(u) } }
-                .distinct()
+        if (domThumbs.isNotEmpty()) {
+            val imgs = domThumbs
             if (imgs.isNotEmpty()) {
                 val title = obj.optString("title").ifBlank { "Instagram Post ($shortcode)" }
                 return MediaPreview(
@@ -992,6 +1007,7 @@ object ZarditEngine {
 
             if (!videoUrl.isNullOrBlank()) {
                 val size = probeUrlSize(videoUrl)
+                val thumb = displayUrls.firstOrNull()
                 return@runCatching MediaPreview(
                     mediaId = shortcode,
                     url = url,
@@ -999,13 +1015,14 @@ object ZarditEngine {
                     author = "Instagram",
                     platform = "INSTAGRAM · VIDEO",
                     durationText = "",
-                    thumbnailUrl = displayUrls.firstOrNull(),
+                    thumbnailUrl = thumb,
                     videoOptions = listOf(
                         VideoOption(1080, "Original", "HD", "MP4 · Direct stream", size),
                     ),
                     audioOptions = defaultAudioOptions.map {
                         it.copy(approxSizeBytes = size?.let { s -> (s / 5L).coerceAtLeast(80_000L) })
                     },
+                    imageUrls = listOfNotNull(thumb),
                     directVideoUrl = videoUrl,
                     sanitizedTitle = "Instagram_$shortcode",
                 )
@@ -1181,6 +1198,7 @@ object ZarditEngine {
                 }
                 opt.copy(approxSizeBytes = est)
             },
+            imageUrls = listOfNotNull(thumb),
             usedInstagramAuth = true,
             sanitizedTitle = sanitizeTitle(rawTitle, "Instagram_$id"),
         )
@@ -1429,6 +1447,7 @@ object ZarditEngine {
                                 },
                                 directVideoUrl = parsedDash.videoOptions.first().directUrl,
                                 directAudioUrl = parsedDash.audioUrl,
+                                imageUrls = listOfNotNull(imgUrl),
                                 sanitizedTitle = sanitizeTitle(title, platform),
                             )
                         }
@@ -1478,6 +1497,7 @@ object ZarditEngine {
                             VideoOption(resTier, resLabel, resBadge, "MP4 · Direct stream", size),
                         ),
                         audioOptions = emptyList(),
+                        imageUrls = listOfNotNull(imgUrl),
                         directVideoUrl = videoUrl,
                         sanitizedTitle = sanitizeTitle(title, platform),
                     )
@@ -1691,17 +1711,22 @@ object ZarditEngine {
         treeUri: Uri?,
     ): String? {
         if (mediaId.isBlank()) return null
+        val shortPrefix = if (mediaId.length >= 11) mediaId.take(11) else mediaId
         val idMarker = "[$mediaId]"
         val qualityMarker = "[$qualityTag]"
+
+        fun matchesName(name: String): Boolean {
+            if (!name.contains(qualityMarker) || !name.endsWith(".$extension", ignoreCase = true)) {
+                return false
+            }
+            return name.contains(idMarker) || (shortPrefix.length >= 10 && name.contains("[$shortPrefix"))
+        }
 
         if (treeUri != null) {
             val dir = DocumentFile.fromTreeUri(context, treeUri)
             val match = dir?.listFiles()?.firstOrNull { file ->
                 val name = file.name ?: return@firstOrNull false
-                file.isFile &&
-                    name.contains(idMarker) &&
-                    name.contains(qualityMarker) &&
-                    name.endsWith(".$extension", ignoreCase = true)
+                file.isFile && matchesName(name)
             }
             if (match != null) {
                 return "${dir.name ?: "Custom folder"}/${match.name}"
@@ -1712,7 +1737,7 @@ object ZarditEngine {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val projection = arrayOf(MediaStore.Downloads.DISPLAY_NAME)
             val selection = "${MediaStore.Downloads.RELATIVE_PATH} LIKE ? AND ${MediaStore.Downloads.DISPLAY_NAME} LIKE ?"
-            val args = arrayOf("%Zardit%", "%$qualityMarker%$idMarker%.$extension")
+            val args = arrayOf("%Zardit%", "%$qualityMarker%[$shortPrefix%.$extension")
             runCatching {
                 context.contentResolver.query(
                     MediaStore.Downloads.EXTERNAL_CONTENT_URI,
@@ -1735,10 +1760,7 @@ object ZarditEngine {
                 "Zardit",
             )
             val match = dir.listFiles()?.firstOrNull { file ->
-                file.isFile &&
-                    file.name.contains(idMarker) &&
-                    file.name.contains(qualityMarker) &&
-                    file.name.endsWith(".$extension", ignoreCase = true)
+                file.isFile && matchesName(file.name)
             }
             return match?.let { "Downloads/Zardit/${it.name}" }
         }
@@ -1985,11 +2007,16 @@ object ZarditEngine {
         onProgress: (Float, String) -> Unit,
     ): SaveResult {
         onProgress(15f, "15% · Using Flash on the image…")
-        val rawBytes = URL(imageUrl).openConnection().run {
+        val rawBytes = (URL(imageUrl).openConnection() as HttpURLConnection).run {
             connectTimeout = 10000
             readTimeout = 15000
-            setRequestProperty("User-Agent", "Mozilla/5.0")
-            getInputStream().use { it.readBytes() }
+            instanceFollowRedirects = true
+            setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/125.0 Mobile Safari/537.36")
+            val lower = imageUrl.lowercase(Locale.US)
+            if ("instagram" in lower || "cdninstagram" in lower || "fbcdn" in lower) {
+                setRequestProperty("Referer", "https://www.instagram.com/")
+            }
+            inputStream.use { it.readBytes() }.also { disconnect() }
         }
         onProgress(70f, "70% · Evolving image format…")
 
