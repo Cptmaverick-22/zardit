@@ -75,9 +75,8 @@ dependencies {
   implementation(libs.androidx.compose.material3)
   implementation(libs.androidx.compose.material.icons.extended)
 
-  // Zardit core: yt-dlp + FFmpeg + thumbnails
+  // Zardit core: yt-dlp + thumbnails + SAF (lightweight: no bundled FFmpeg)
   implementation(libs.youtubedl.library)
-  implementation(libs.youtubedl.ffmpeg)
   implementation(libs.coil.compose)
   implementation(libs.androidx.documentfile)
   // Tooling

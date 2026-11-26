@@ -1,9 +1,13 @@
 package io.github.cptmaverick_22.zardit.ui.main
 
 import android.annotation.SuppressLint
+import android.graphics.Color
+import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.layout.Arrangement
@@ -13,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -40,6 +45,8 @@ fun InstagramLoginDialog(
 ) {
     val context = LocalContext.current
     var finished by remember { mutableStateOf(false) }
+    var isLoading by remember { mutableStateOf(true) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -77,6 +84,19 @@ fun InstagramLoginDialog(
                     }
                 }
 
+                if (isLoading) {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                }
+
+                errorMessage?.let { msg ->
+                    Text(
+                        text = msg,
+                        color = MaterialTheme.colorScheme.primary,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                    )
+                }
+
                 AndroidView(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -85,17 +105,29 @@ fun InstagramLoginDialog(
                         val cm = CookieManager.getInstance()
                         cm.setAcceptCookie(true)
                         WebView(ctx).apply {
+                            layoutParams = ViewGroup.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                            )
+                            setBackgroundColor(Color.WHITE)
                             cm.setAcceptThirdPartyCookies(this, true)
-                            settings.javaScriptEnabled = true
-                            settings.domStorageEnabled = true
-                            settings.databaseEnabled = true
-                            settings.loadWithOverviewMode = true
-                            settings.useWideViewPort = true
-                            settings.userAgentString =
-                                "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36"
-                            @Suppress("DEPRECATION")
-                            settings.saveFormData = false
-                            webChromeClient = WebChromeClient()
+                            settings.apply {
+                                javaScriptEnabled = true
+                                domStorageEnabled = true
+                                databaseEnabled = true
+                                loadWithOverviewMode = true
+                                useWideViewPort = true
+                                javaScriptCanOpenWindowsAutomatically = true
+                                mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+                                userAgentString = userAgentString.replace("; wv", "")
+                                @Suppress("DEPRECATION")
+                                saveFormData = false
+                            }
+                            webChromeClient = object : WebChromeClient() {
+                                override fun onProgressChanged(view: WebView?, newProgress: Int) {
+                                    isLoading = newProgress < 100
+                                }
+                            }
                             webViewClient = object : WebViewClient() {
                                 override fun shouldOverrideUrlLoading(
                                     view: WebView?,
@@ -105,8 +137,19 @@ fun InstagramLoginDialog(
                                     return scheme != "http" && scheme != "https"
                                 }
 
+                                override fun onReceivedError(
+                                    view: WebView?,
+                                    request: WebResourceRequest?,
+                                    error: WebResourceError?,
+                                ) {
+                                    if (request?.isForMainFrame == true) {
+                                        errorMessage = "Could not load Instagram (${error?.description ?: "network error"})."
+                                    }
+                                }
+
                                 override fun onPageFinished(view: WebView?, url: String?) {
                                     super.onPageFinished(view, url)
+                                    isLoading = false
                                     if (finished) return
                                     val raw = cm.getCookie("https://www.instagram.com")
                                     val minimal = InstagramAuth.extractMinimalCookies(raw)

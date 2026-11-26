@@ -1,7 +1,6 @@
 package io.github.cptmaverick_22.zardit
 
 import android.app.Application
-import com.yausername.ffmpeg.FFmpeg
 import com.yausername.youtubedl_android.YoutubeDL
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -22,7 +21,6 @@ class ZarditApp : Application() {
         appScope.launch {
             _initResult.value = runCatching {
                 YoutubeDL.getInstance().init(this@ZarditApp)
-                FFmpeg.getInstance().init(this@ZarditApp)
             }
         }
     }

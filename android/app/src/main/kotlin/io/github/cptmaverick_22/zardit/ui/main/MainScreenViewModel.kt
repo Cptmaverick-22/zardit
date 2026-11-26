@@ -41,7 +41,7 @@ data class MainUiState(
     val preview: MediaPreview? = null,
     val downloadMode: DownloadMode = DownloadMode.VIDEO,
     val selectedVideoHeight: Int? = null,
-    val selectedAudioId: String = "mp3_192",
+    val selectedAudioId: String = "orig_m4a",
     val selectedImageFormat: ImageFormat = ImageFormat.ORIGINAL,
     val selectedImageIndices: Set<Int> = emptySet(),
     val selectedPlaylistIndices: Set<Int> = emptySet(),

@@ -17,18 +17,21 @@ import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.Locale
+import org.json.JSONArray
 import org.json.JSONObject
 
 object ZarditEngine {
 
     val defaultAudioOptions = listOf(
-        AudioOption("mp3_320", "320 kbps", "MP3 · High quality", 320),
-        AudioOption("mp3_192", "192 kbps", "MP3 · Balanced", 192),
-        AudioOption("mp3_128", "128 kbps", "MP3 · Compact", 128),
-        AudioOption("orig_m4a", "Original", "M4A · No re-encoding", null, isOriginal = true),
+        AudioOption("orig_m4a", "Best Audio", "M4A / AAC · Native quality", null, isOriginal = true),
+        AudioOption("compact_m4a", "Compact Audio", "M4A · Smaller file", 128, isOriginal = false),
     )
 
     private val imageExts = setOf("jpg", "jpeg", "png", "webp")
+    private val croppedUrlRegex = Regex(
+        """(?:/[sp]\d+x\d+/|/c\d+\.\d+\.\d+\.\d+|dst-jpg_e\d+_[sp]|sqp=|profile_pic)""",
+        RegexOption.IGNORE_CASE,
+    )
     private val ogTagRegex = Regex(
         """<meta\s+(?:property|name)=["']([^"']+)["']\s+content=["']([^"']+)["']|<meta\s+content=["']([^"']+)["']\s+(?:property|name)=["']([^"']+)["']""",
         RegexOption.IGNORE_CASE,
@@ -57,18 +60,31 @@ object ZarditEngine {
         } catch (t: Throwable) {
             val msg = t.message.orEmpty()
             val isIg = detectPlatformName(cleanUrl) == "Instagram"
+            val isNoVideo = msg.contains("No video formats found", ignoreCase = true) ||
+                msg.contains("no video in this post", ignoreCase = true)
+
+            if (isNoVideo) {
+                fetchImageFallback(context, cleanUrl, useIgCookies = false)?.let { return it }
+                if (isIg) {
+                    fetchInstagramEmbedFallback(cleanUrl)?.let { return it }
+                    if (InstagramAuth.hasSession(context)) {
+                        fetchImageFallback(context, cleanUrl, useIgCookies = true)?.let { return it }
+                        fetchWithInstagramCookies(context, cleanUrl)?.let { return it }
+                    }
+                }
+            }
+
             if (isIg) {
                 fetchInstagramEmbedFallback(cleanUrl)?.let { return it }
                 if (InstagramAuth.hasSession(context)) {
                     fetchWithInstagramCookies(context, cleanUrl)?.let { return it }
                 }
             }
-            if (msg.contains("No video formats found", ignoreCase = true) ||
-                msg.contains("no video in this post", ignoreCase = true) ||
-                msg.contains("generic", ignoreCase = true)
-            ) {
-                fetchImageFallback(cleanUrl)?.let { return it }
+
+            if (msg.contains("generic", ignoreCase = true) || detectPlatformName(cleanUrl) == "Threads") {
+                fetchWebMetaFallback(cleanUrl)?.let { return it }
             }
+
             throw IllegalStateException(friendlyError(msg, isIg))
         }
 
@@ -156,9 +172,9 @@ object ZarditEngine {
                 opt.bitrateKbps != null && durationSec > 0 ->
                     (durationSec.toLong() * opt.bitrateKbps.toLong() * 1000L) / 8L
                 opt.bitrateKbps != null && bestAudioSize > 0L ->
-                    (bestAudioSize * opt.bitrateKbps.toLong()) / 128L
+                    (bestAudioSize * 8L) / 10L
                 opt.bitrateKbps != null && fallbackVideoSize != null ->
-                    ((fallbackVideoSize / 5L) * opt.bitrateKbps.toLong() / 128L).coerceAtLeast(80_000L)
+                    (fallbackVideoSize / 6L).coerceAtLeast(80_000L)
                 else -> null
             }
             opt.copy(approxSizeBytes = estimated)
@@ -221,13 +237,40 @@ object ZarditEngine {
     fun sanitizeTitle(raw: String, fallback: String = "Zardit"): String {
         val decoded = decodeHtml(raw)
         val noHashtags = decoded.replace(Regex("""#\S+"""), " ")
-        val noMentionsTail = noHashtags.replace(Regex("""\s+"""), " ").trim()
-        val safe = noMentionsTail
+        val safe = noHashtags
             .replace(Regex("""[\\/:*?"<>|]"""), "-")
             .replace(Regex("""[\r\n\t]+"""), " ")
             .replace(Regex("""\s+"""), " ")
             .trim(' ', '.', '-')
         return safe.take(65).trim().ifBlank { fallback }
+    }
+
+    private fun bestUncroppedImageFromJson(entry: JSONObject): String? {
+        val candidates = mutableListOf<Triple<String, Int, Int>>()
+        fun collect(arr: JSONArray?) {
+            if (arr == null) return
+            for (i in 0 until arr.length()) {
+                val obj = arr.optJSONObject(i) ?: continue
+                val u = obj.optString("url").takeIf { it.startsWith("http") } ?: continue
+                val ext = obj.optString("ext").lowercase(Locale.US)
+                val vcodec = obj.optString("vcodec")
+                if (arr === entry.optJSONArray("formats") && ext !in imageExts && vcodec != "images") continue
+                val w = obj.optInt("width", 0)
+                val h = obj.optInt("height", 0)
+                val uncroppedScore = if (croppedUrlRegex.containsMatchIn(u)) 0 else 1
+                candidates.add(Triple(u, uncroppedScore, w * h))
+            }
+        }
+        collect(entry.optJSONArray("formats"))
+        collect(entry.optJSONArray("thumbnails"))
+        val best = candidates.maxWithOrNull(compareBy({ it.second }, { it.third }))
+        if (best != null) return best.first
+
+        val direct = entry.optString("url").takeIf { it.startsWith("http") }
+        val thumb = entry.optString("thumbnail").takeIf { it.startsWith("http") }
+        return listOfNotNull(direct, thumb)
+            .sortedByDescending { if (croppedUrlRegex.containsMatchIn(it)) 0 else 1 }
+            .firstOrNull()
     }
 
     private fun fetchInstagramEmbedFallback(url: String): MediaPreview? {
@@ -242,7 +285,7 @@ object ZarditEngine {
                 instanceFollowRedirects = true
                 setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/125.0 Mobile Safari/537.36")
             }
-            val html = conn.inputStream.bufferedReader().use { it.readText().take(768 * 1024) }
+            val html = conn.inputStream.bufferedReader().use { it.readText().take(1024 * 1024) }
             conn.disconnect()
 
             val videoUrl = Regex(""""video_url"\s*:\s*"(https?:[^"]+)"""")
@@ -253,10 +296,15 @@ object ZarditEngine {
             val displayUrls = linkedSetOf<String>()
             Regex(""""display_url"\s*:\s*"(https?:[^"]+)"""")
                 .findAll(html)
-                .forEach { m -> displayUrls.add(m.groupValues[1].unescapeJsonUrl()) }
-            Regex("""class=["'][^"']*EmbeddedMediaImage[^"']*["'][^>]+src=["'](https?://[^"']+)["']""", RegexOption.IGNORE_CASE)
-                .findAll(html)
-                .forEach { m -> displayUrls.add(m.groupValues[1].replace("&amp;", "&")) }
+                .forEach { m ->
+                    val u = m.groupValues[1].unescapeJsonUrl()
+                    if (!croppedUrlRegex.containsMatchIn(u)) displayUrls.add(u)
+                }
+            if (displayUrls.isEmpty()) {
+                Regex("""class=["'][^"']*EmbeddedMediaImage[^"']*["'][^>]+src=["'](https?://[^"']+)["']""", RegexOption.IGNORE_CASE)
+                    .findAll(html)
+                    .forEach { m -> displayUrls.add(m.groupValues[1].replace("&amp;", "&")) }
+            }
 
             if (!videoUrl.isNullOrBlank()) {
                 val size = probeUrlSize(videoUrl)
@@ -312,10 +360,10 @@ object ZarditEngine {
         val json = JSONObject(jsonStr)
         val formatsArr = json.optJSONArray("formats")
         val durationSec = json.optInt("duration", 0)
-        val title = json.optString("title").ifBlank { "Instagram Post" }
+        val rawTitle = decodeHtml(json.optString("title").ifBlank { "Instagram Post" })
         val id = json.optString("id").ifBlank { url.hashCode().toString() }
-        val uploader = json.optString("uploader").ifBlank { "Instagram" }
-        val thumb = json.optString("thumbnail").takeIf { it.startsWith("http") }
+        val uploader = decodeHtml(json.optString("uploader").ifBlank { "Instagram" })
+        val thumb = bestUncroppedImageFromJson(json)
 
         var probedSize: Long? = null
         if (formatsArr != null && formatsArr.length() > 0) {
@@ -334,7 +382,7 @@ object ZarditEngine {
             return@runCatching MediaPreview(
                 mediaId = id,
                 url = url,
-                title = title,
+                title = rawTitle,
                 author = uploader,
                 platform = "INSTAGRAM · IMAGE",
                 durationText = "1 image",
@@ -343,13 +391,14 @@ object ZarditEngine {
                 audioOptions = emptyList(),
                 imageUrls = listOf(thumb),
                 usedInstagramAuth = true,
+                sanitizedTitle = sanitizeTitle(rawTitle, "Instagram_$id"),
             )
         }
 
         MediaPreview(
             mediaId = id,
             url = url,
-            title = title,
+            title = rawTitle,
             author = uploader,
             platform = "INSTAGRAM · VIDEO",
             durationText = formatDuration(durationSec),
@@ -359,14 +408,15 @@ object ZarditEngine {
                 VideoOption(720, "720p", "HD", "MP4 · Best available", probedSize),
             ),
             audioOptions = defaultAudioOptions.map { opt ->
-                val est = if (durationSec > 0 && opt.bitrateKbps != null) {
-                    (durationSec.toLong() * opt.bitrateKbps.toLong() * 1000L) / 8L
+                val est = if (durationSec > 0) {
+                    (durationSec.toLong() * (opt.bitrateKbps ?: 128).toLong() * 1000L) / 8L
                 } else {
                     probedSize?.let { (it / 5L).coerceAtLeast(80_000L) }
                 }
                 opt.copy(approxSizeBytes = est)
             },
             usedInstagramAuth = true,
+            sanitizedTitle = sanitizeTitle(rawTitle, "Instagram_$id"),
         )
     }.getOrNull()
 
@@ -375,88 +425,132 @@ object ZarditEngine {
             .replace("\\u0026", "&")
             .replace("&amp;", "&")
 
-    private fun fetchImageFallback(url: String): MediaPreview? {
-        // 1. Try yt-dlp --dump-single-json --ignore-errors for carousel thumbnails
+    private fun fetchImageFallback(context: Context, url: String, useIgCookies: Boolean): MediaPreview? {
         runCatching {
-            val req = YoutubeDLRequest(url).apply {
-                addOption("--dump-single-json")
-                addOption("--ignore-errors")
+            val execOut = if (useIgCookies && InstagramAuth.hasSession(context)) {
+                InstagramAuth.withTempCookieFile(context) { cookieFile ->
+                    val req = YoutubeDLRequest(url).apply {
+                        addOption("--dump-single-json")
+                        addOption("--ignore-errors")
+                        addOption("--cookies", cookieFile.absolutePath)
+                    }
+                    YoutubeDL.getInstance().execute(req, null, null).out
+                }
+            } else {
+                val req = YoutubeDLRequest(url).apply {
+                    addOption("--dump-single-json")
+                    addOption("--ignore-errors")
+                }
+                YoutubeDL.getInstance().execute(req, null, null).out
             }
-            val res = YoutubeDL.getInstance().execute(req, null, null)
-            if (res.out.isNotBlank()) {
-                val json = JSONObject(res.out)
+
+            if (execOut.isNotBlank()) {
+                val json = JSONObject(execOut)
                 val urls = linkedSetOf<String>()
                 val entries = json.optJSONArray("entries")
                 if (entries != null) {
                     for (i in 0 until entries.length()) {
                         val obj = entries.optJSONObject(i) ?: continue
-                        val u = obj.optString("url").takeIf { it.startsWith("http") }
-                            ?: obj.optString("thumbnail").takeIf { it.startsWith("http") }
-                        if (u != null) urls.add(u)
+                        bestUncroppedImageFromJson(obj)?.let { urls.add(it) }
                     }
                 }
-                val mainThumb = json.optString("thumbnail").takeIf { it.startsWith("http") }
-                if (urls.isEmpty() && mainThumb != null) urls.add(mainThumb)
+                if (urls.isEmpty()) {
+                    bestUncroppedImageFromJson(json)?.let { urls.add(it) }
+                }
                 if (urls.isNotEmpty()) {
-                    val platform = json.optString("extractor_key", "WEB")
+                    val platform = json.optString("extractor_key", detectPlatformName(url))
                         .replace("Tab", "").uppercase(Locale.US)
+                    val rawTitle = decodeHtml(json.optString("title").ifBlank { "Image post (${urls.size})" })
+                    val id = json.optString("id").ifBlank { url.hashCode().toString() }
                     return MediaPreview(
-                        mediaId = json.optString("id").ifBlank { url.hashCode().toString() },
+                        mediaId = id,
                         url = url,
-                        title = json.optString("title").ifBlank { "Image post (${urls.size})" },
-                        author = json.optString("uploader").ifBlank { "${urls.size} image${if (urls.size == 1) "" else "s"}" },
+                        title = rawTitle,
+                        author = decodeHtml(json.optString("uploader").ifBlank { "${urls.size} image${if (urls.size == 1) "" else "s"}" }),
                         platform = "$platform · IMAGE",
                         durationText = "${urls.size} image${if (urls.size == 1) "" else "s"}",
                         thumbnailUrl = urls.first(),
                         videoOptions = emptyList(),
                         audioOptions = emptyList(),
                         imageUrls = urls.toList(),
+                        usedInstagramAuth = useIgCookies,
+                        sanitizedTitle = sanitizeTitle(rawTitle, "${platform}_$id"),
                     )
                 }
             }
         }
 
-        // 2. Fall back to OpenGraph og:image extraction
-        return runCatching {
-            val conn = (URL(url).openConnection() as HttpURLConnection).apply {
-                connectTimeout = 8000
-                readTimeout = 8000
-                instanceFollowRedirects = true
-                setRequestProperty("User-Agent", "Mozilla/5.0")
-            }
-            val html = conn.inputStream.bufferedReader().use { it.readText().take(512 * 1024) }
-            conn.disconnect()
+        return fetchWebMetaFallback(url)
+    }
 
-            val meta = mutableMapOf<String, String>()
-            ogTagRegex.findAll(html).forEach { m ->
-                val key = (m.groupValues[1].ifEmpty { m.groupValues[4] }).lowercase(Locale.US)
-                val valText = m.groupValues[2].ifEmpty { m.groupValues[3] }
-                    .replace("&amp;", "&")
-                    .trim()
-                if (key.isNotEmpty() && valText.isNotEmpty() && key !in meta) {
-                    meta[key] = valText
-                }
-            }
-            val imgUrl = meta["og:image:secure_url"] ?: meta["og:image"] ?: meta["twitter:image"]
-            if (imgUrl.isNullOrBlank() || !imgUrl.startsWith("http")) return@runCatching null
+    private fun fetchWebMetaFallback(url: String): MediaPreview? = runCatching {
+        val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 8000
+            readTimeout = 8000
+            instanceFollowRedirects = true
+            setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/125.0 Mobile Safari/537.36")
+        }
+        val html = conn.inputStream.bufferedReader().use { it.readText().take(768 * 1024) }
+        conn.disconnect()
 
-            val platform = detectPlatformName(url).uppercase(Locale.US)
-            val title = decodeHtml(meta["og:title"] ?: meta["twitter:title"] ?: "Image post")
-            MediaPreview(
+        val meta = mutableMapOf<String, String>()
+        ogTagRegex.findAll(html).forEach { m ->
+            val key = (m.groupValues[1].ifEmpty { m.groupValues[4] }).lowercase(Locale.US)
+            val valText = decodeHtml(m.groupValues[2].ifEmpty { m.groupValues[3] }).trim()
+            if (key.isNotEmpty() && valText.isNotEmpty() && key !in meta) {
+                meta[key] = valText
+            }
+        }
+
+        val platform = detectPlatformName(url).uppercase(Locale.US)
+        val title = decodeHtml(meta["og:title"] ?: meta["twitter:title"] ?: "$platform post")
+        val imgUrl = meta["og:image:secure_url"] ?: meta["og:image"] ?: meta["twitter:image"]
+
+        // Check video metadata FIRST (crucial for Threads videos!)
+        val videoUrl = (meta["og:video:secure_url"] ?: meta["og:video"] ?: meta["twitter:player:stream"])
+            ?.takeIf { it.startsWith("http") }
+            ?: Regex(""""video_url"\s*:\s*"(https?:[^"]+)"""")
+                .find(html)?.groupValues?.getOrNull(1)?.unescapeJsonUrl()
+            ?: Regex(""""video_versions"\s*:\s*\[\s*\{[^}]*"url"\s*:\s*"(https?:[^"]+)"""")
+                .find(html)?.groupValues?.getOrNull(1)?.unescapeJsonUrl()
+            ?: Regex("""<video[^>]+src=["'](https?://[^"']+)["']""", RegexOption.IGNORE_CASE)
+                .find(html)?.groupValues?.getOrNull(1)?.replace("&amp;", "&")
+
+        if (!videoUrl.isNullOrBlank()) {
+            val size = probeUrlSize(videoUrl)
+            return@runCatching MediaPreview(
                 mediaId = url.hashCode().toString(),
                 url = url,
                 title = title,
                 author = platform,
-                platform = "$platform · IMAGE",
-                durationText = "1 image",
+                platform = "$platform · VIDEO",
+                durationText = "",
                 thumbnailUrl = imgUrl,
-                videoOptions = emptyList(),
+                videoOptions = listOf(
+                    VideoOption(1080, "Original", "HD", "MP4 · Direct stream", size),
+                ),
                 audioOptions = emptyList(),
-                imageUrls = listOf(imgUrl),
-                sanitizedTitle = sanitizeTitle(title, fallback = platform),
+                directVideoUrl = videoUrl,
+                sanitizedTitle = sanitizeTitle(title, platform),
             )
-        }.getOrNull()
-    }
+        }
+
+        if (imgUrl.isNullOrBlank() || !imgUrl.startsWith("http")) return@runCatching null
+
+        MediaPreview(
+            mediaId = url.hashCode().toString(),
+            url = url,
+            title = title,
+            author = platform,
+            platform = "$platform · IMAGE",
+            durationText = "1 image",
+            thumbnailUrl = imgUrl,
+            videoOptions = emptyList(),
+            audioOptions = emptyList(),
+            imageUrls = listOf(imgUrl),
+            sanitizedTitle = sanitizeTitle(title, platform),
+        )
+    }.getOrNull()
 
     private fun detectPlatformName(url: String): String {
         val lower = url.lowercase(Locale.US)
@@ -474,13 +568,13 @@ object ZarditEngine {
     private fun friendlyError(raw: String, isInstagram: Boolean = false): String {
         val lower = raw.lowercase(Locale.US)
         return when {
-            "empty media response" in lower || "login" in lower || "cookies" in lower ->
+            "empty media response" in lower || "login" in lower || "cookies" in lower || "certain audiences" in lower ->
                 if (isInstagram) {
-                    "This Instagram post requires sign-in or is rate-limited. Tap \"IG\" at the top to connect your account locally, or retry later."
+                    "This Instagram post requires sign-in or is restricted. Tap \"IG\" at the top to connect your account locally, or retry later."
                 } else {
                     "This post requires login or is temporarily rate-limited by the platform. Try updating the Engine or retry later."
                 }
-            "no video formats found" in lower ->
+            "no video formats found" in lower || "no video in this post" in lower ->
                 "No downloadable video or image was found at this link."
             else -> {
                 raw.lineSequence()
@@ -510,14 +604,12 @@ object ZarditEngine {
                     .let { raw ->
                         if (raw.startsWith("http")) raw else "https://www.youtube.com/watch?v=$id"
                     }
-                val thumb = obj.optJSONArray("thumbnails")?.let { thumbs ->
-                    if (thumbs.length() > 0) thumbs.optJSONObject(thumbs.length() - 1)?.optString("url") else null
-                } ?: obj.optString("thumbnail").ifBlank { null }
+                val thumb = bestUncroppedImageFromJson(obj)
                 add(
                     PlaylistEntry(
                         index = i + 1,
                         id = id,
-                        title = obj.optString("title").ifBlank { "Item ${i + 1}" },
+                        title = decodeHtml(obj.optString("title").ifBlank { "Item ${i + 1}" }),
                         url = entryUrl,
                         durationText = formatDuration(obj.optInt("duration", 0)),
                         thumbnailUrl = thumb,
@@ -530,16 +622,17 @@ object ZarditEngine {
         val platform = json.optString("extractor_key", "PLAYLIST")
             .replace("Tab", "")
             .uppercase(Locale.US)
+        val plTitle = decodeHtml(json.optString("title").ifBlank { "Playlist (${entries.size} items)" })
         MediaPreview(
             mediaId = json.optString("id").ifBlank { url.hashCode().toString() },
             url = url,
-            title = json.optString("title").ifBlank { "Playlist (${entries.size} items)" },
-            author = json.optString("uploader").ifBlank { "${entries.size} items" },
+            title = plTitle,
+            author = decodeHtml(json.optString("uploader").ifBlank { "${entries.size} items" }),
             platform = "$platform · PLAYLIST",
             durationText = "${entries.size} items",
             thumbnailUrl = entries.firstOrNull()?.thumbnailUrl,
             videoOptions = listOf(
-                VideoOption(1080, "1080p", "Full HD", "MP4 · H.264", null),
+                VideoOption(1080, "1080p", "Full HD", "MP4 · Native mux", null),
                 VideoOption(720, "720p", "HD", "MP4 · H.264", null),
                 VideoOption(480, "480p", "SD", "MP4 · H.264", null),
                 VideoOption(360, "360p", "Low", "MP4 · H.264", null),
@@ -547,6 +640,7 @@ object ZarditEngine {
             audioOptions = defaultAudioOptions,
             isPlaylist = true,
             playlistEntries = entries,
+            sanitizedTitle = sanitizeTitle(plTitle, platform),
         )
     }.getOrNull()
 
@@ -613,11 +707,7 @@ object ZarditEngine {
         imageFormat: ImageFormat = ImageFormat.ORIGINAL,
     ): String = when (mode) {
         DownloadMode.VIDEO -> "${videoHeight ?: 1080}p"
-        DownloadMode.AUDIO -> if (audioOption?.isOriginal == true) {
-            "original"
-        } else {
-            "${audioOption?.bitrateKbps ?: 192}kbps"
-        }
+        DownloadMode.AUDIO -> if (audioOption?.isOriginal == true) "original" else "compact"
         DownloadMode.IMAGE -> imageFormat.id
     }
 
@@ -627,7 +717,7 @@ object ZarditEngine {
         imageFormat: ImageFormat = ImageFormat.ORIGINAL,
     ): String = when (mode) {
         DownloadMode.VIDEO -> "mp4"
-        DownloadMode.AUDIO -> if (audioOption?.isOriginal == true) "m4a" else "mp3"
+        DownloadMode.AUDIO -> "m4a"
         DownloadMode.IMAGE -> imageFormat.ext
     }
 
@@ -717,7 +807,7 @@ object ZarditEngine {
                 onProgress(15f, "15% · Awakening Charizard…")
                 val id = Regex("""/(?:reel|p|tv)/([A-Za-z0-9_-]+)""").find(url)?.groupValues?.getOrNull(1)
                     ?: url.hashCode().toString()
-                val outFile = File(workDir, "${safePrefix ?: "Instagram"} [$qTag] [$id].mp4")
+                val outFile = File(workDir, "${safePrefix ?: "Video"} [$qTag] [$id].mp4")
                 val conn = (URL(directVideoUrl).openConnection() as HttpURLConnection).apply {
                     connectTimeout = 10000
                     readTimeout = 20000
@@ -745,59 +835,86 @@ object ZarditEngine {
                 return saveOutputFile(context, outFile, mode, treeUri)
             }
 
-            fun buildRequest(cookiePath: String?): YoutubeDLRequest = YoutubeDLRequest(url).apply {
-                addOption("--no-playlist")
-                addOption("--no-mtime")
-                val titleTemplate = if (!safePrefix.isNullOrBlank()) safePrefix else "%(title).70B"
-                addOption("-o", "${workDir.absolutePath}/$titleTemplate [$qTag] [%(id)s].%(ext)s")
-                if (!cookiePath.isNullOrBlank()) {
-                    addOption("--cookies", cookiePath)
-                }
-
-                when (mode) {
-                    DownloadMode.VIDEO -> {
-                        val h = videoHeight ?: 1080
-                        val formatSelector = if (h <= 1080) {
-                            "bestvideo[height<=$h][vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/" +
-                                "bestvideo[height<=$h][ext=mp4]+bestaudio[ext=m4a]/" +
-                                "best[height<=$h][ext=mp4]/best[height<=$h]/best"
-                        } else {
-                            "bestvideo[height<=$h]+bestaudio/best[height<=$h]/best"
-                        }
-                        addOption("-f", formatSelector)
-                        addOption("--merge-output-format", "mp4")
-                    }
-
-                    DownloadMode.AUDIO -> {
-                        addOption("-x")
-                        addOption("--embed-thumbnail")
-                        addOption("--add-metadata")
-                        if (audioOption?.isOriginal == true) {
-                            addOption("--audio-format", "m4a")
-                        } else {
-                            val kbps = audioOption?.bitrateKbps ?: 192
-                            addOption("--audio-format", "mp3")
-                            addOption("--audio-quality", "${kbps}K")
-                        }
-                    }
-
-                    DownloadMode.IMAGE -> error("Use downloadImage for Image mode.")
-                }
-            }
-
+            val titleTemplate = if (!safePrefix.isNullOrBlank()) safePrefix else "%(title).65B"
             val progressCallback: (Float, Long, String) -> Unit = { progress, _, line ->
                 val pct = if (progress >= 0f) progress.coerceIn(0f, 100f) else 0f
                 val friendly = ZarditFlavor.formatProgressLine(line, pct)
                 onProgress(pct, friendly)
             }
 
-            if (useInstagramCookies && InstagramAuth.hasSession(context)) {
-                InstagramAuth.withTempCookieFile(context) { cookieFile ->
-                    YoutubeDL.getInstance().execute(buildRequest(cookieFile.absolutePath), processId, progressCallback)
+            fun runRequest(req: YoutubeDLRequest) {
+                if (useInstagramCookies && InstagramAuth.hasSession(context)) {
+                    InstagramAuth.withTempCookieFile(context) { cookieFile ->
+                        req.addOption("--cookies", cookieFile.absolutePath)
+                        YoutubeDL.getInstance().execute(req, processId, progressCallback)
+                    }
+                } else {
+                    YoutubeDL.getInstance().execute(req, processId, progressCallback)
                 }
-            } else {
-                YoutubeDL.getInstance().execute(buildRequest(null), processId, progressCallback)
             }
+
+            if (mode == DownloadMode.AUDIO) {
+                val formatSpec = if (audioOption?.isOriginal == true) {
+                    "bestaudio[ext=m4a]/bestaudio"
+                } else {
+                    "bestaudio[abr<=140][ext=m4a]/bestaudio[ext=m4a]/bestaudio"
+                }
+                val req = YoutubeDLRequest(url).apply {
+                    addOption("--no-playlist")
+                    addOption("--no-mtime")
+                    addOption("-f", formatSpec)
+                    addOption("-o", "${workDir.absolutePath}/$titleTemplate [$qTag] [%(id)s].%(ext)s")
+                }
+                runRequest(req)
+                val outputFile = workDir.listFiles()
+                    ?.filter { it.isFile && !it.name.endsWith(".part") && !it.name.endsWith(".ytdl") }
+                    ?.maxByOrNull { it.length() }
+                    ?: error("Download finished, but no output file was found.")
+                return saveOutputFile(context, outputFile, mode, treeUri)
+            }
+
+            // Video mode (no FFmpeg):
+            // Try separate MP4 video + M4A audio & mux natively with MediaMuxer for >720p, or direct MP4 when single stream.
+            val h = videoHeight ?: 1080
+            val isYouTube = detectPlatformName(url) == "YouTube"
+            if (isYouTube && h > 720) {
+                val vidTemp = File(workDir, "video_only.mp4")
+                val audTemp = File(workDir, "audio_only.m4a")
+                val vidReq = YoutubeDLRequest(url).apply {
+                    addOption("--no-playlist")
+                    addOption("--no-mtime")
+                    addOption("-f", "bestvideo[height<=$h][vcodec^=avc1][ext=mp4]/bestvideo[height<=$h][ext=mp4]")
+                    addOption("-o", vidTemp.absolutePath)
+                }
+                runRequest(vidReq)
+
+                val audReq = YoutubeDLRequest(url).apply {
+                    addOption("--no-playlist")
+                    addOption("--no-mtime")
+                    addOption("-f", "bestaudio[ext=m4a]")
+                    addOption("-o", audTemp.absolutePath)
+                }
+                runRequest(audReq)
+
+                if (vidTemp.isFile && audTemp.isFile) {
+                    onProgress(95f, ZarditFlavor.formatProgressLine("ffmpeg", 95f))
+                    val id = Regex("""(?:v=|youtu\.be/|shorts/)([A-Za-z0-9_-]{11})""")
+                        .find(url)?.groupValues?.getOrNull(1) ?: url.hashCode().toString()
+                    val finalName = "${safePrefix ?: "Video"} [$qTag] [$id].mp4"
+                    val muxedOut = File(workDir, finalName)
+                    NativeMuxer.muxMp4(vidTemp, audTemp, muxedOut)
+                    return saveOutputFile(context, muxedOut, mode, treeUri)
+                }
+            }
+
+            // Single pre-muxed stream (YouTube <=720p, Instagram, Threads, Reddit, X, Facebook)
+            val singleReq = YoutubeDLRequest(url).apply {
+                addOption("--no-playlist")
+                addOption("--no-mtime")
+                addOption("-f", "best[height<=$h][ext=mp4]/best[ext=mp4]/best[height<=$h]/best")
+                addOption("-o", "${workDir.absolutePath}/$titleTemplate [$qTag] [%(id)s].%(ext)s")
+            }
+            runRequest(singleReq)
 
             val outputFile = workDir.listFiles()
                 ?.filter { it.isFile && !it.name.endsWith(".part") && !it.name.endsWith(".ytdl") }
