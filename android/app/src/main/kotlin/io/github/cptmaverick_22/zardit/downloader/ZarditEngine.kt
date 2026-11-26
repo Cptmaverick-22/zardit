@@ -60,28 +60,28 @@ object ZarditEngine {
         } catch (t: Throwable) {
             val msg = t.message.orEmpty()
             val isIg = detectPlatformName(cleanUrl) == "Instagram"
+            val isThreads = detectPlatformName(cleanUrl) == "Threads"
             val isNoVideo = msg.contains("No video formats found", ignoreCase = true) ||
                 msg.contains("no video in this post", ignoreCase = true)
 
-            if (isNoVideo) {
-                fetchImageFallback(context, cleanUrl, useIgCookies = false)?.let { return it }
-                if (isIg) {
-                    fetchInstagramEmbedFallback(cleanUrl)?.let { return it }
-                    if (InstagramAuth.hasSession(context)) {
-                        fetchImageFallback(context, cleanUrl, useIgCookies = true)?.let { return it }
-                        fetchWithInstagramCookies(context, cleanUrl)?.let { return it }
-                    }
-                }
-            }
-
             if (isIg) {
-                fetchInstagramEmbedFallback(cleanUrl)?.let { return it }
+                if (InstagramAuth.hasSession(context)) {
+                    fetchInstagramApiWithCookies(context, cleanUrl)?.let { return it }
+                }
+                if (isNoVideo) {
+                    fetchImageFallback(context, cleanUrl, useIgCookies = false)?.let { return it }
+                    fetchInstagramEmbedFallback(cleanUrl)?.let { return it }
+                } else {
+                    fetchInstagramEmbedFallback(cleanUrl)?.let { return it }
+                }
                 if (InstagramAuth.hasSession(context)) {
                     fetchWithInstagramCookies(context, cleanUrl)?.let { return it }
                 }
+            } else if (isNoVideo) {
+                fetchImageFallback(context, cleanUrl, useIgCookies = false)?.let { return it }
             }
 
-            if (msg.contains("generic", ignoreCase = true) || detectPlatformName(cleanUrl) == "Threads") {
+            if (isThreads || msg.contains("generic", ignoreCase = true)) {
                 fetchWebMetaFallback(cleanUrl)?.let { return it }
             }
 
@@ -110,7 +110,8 @@ object ZarditEngine {
         val heightBuckets = listOf(2160, 1440, 1080, 720, 480, 360, 240, 144)
         var videoOptions = heightBuckets.mapNotNull { h ->
             val matching = formats.filter { f ->
-                f.height in (h - 20)..(h + 20) && f.vcodec != "none"
+                val effectiveHeight = effectiveVideoHeight(f.width, f.height)
+                effectiveHeight in (h - 20)..(h + 20) && f.vcodec != "none"
             }
             if (matching.isEmpty()) return@mapNotNull null
 
@@ -157,9 +158,7 @@ object ZarditEngine {
                 ?: info.url?.takeIf { it.startsWith("http") }
             val fallbackSize = probeTarget?.let { probeUrlSize(it) }
             videoOptions = listOf(
-                VideoOption(1080, "1080p", "Full HD", "MP4 · Best available", fallbackSize),
-                VideoOption(720, "720p", "HD", "MP4 · Best available", fallbackSize),
-                VideoOption(480, "480p", "SD", "MP4 · Best available", fallbackSize),
+                VideoOption(1080, "Original", "MP4", "Best available stream", fallbackSize),
             )
         }
 
@@ -203,17 +202,22 @@ object ZarditEngine {
         )
     }
 
+    private fun effectiveVideoHeight(width: Int, height: Int): Int {
+        if (width > 0 && height > 0) return minOf(width, height)
+        return height
+    }
+
     private fun normalizeAndResolveUrl(url: String): String {
         var current = url
         val lower = current.lowercase(Locale.US)
         if (("threads.com" in lower || "threads.net" in lower) && "/share/" in lower) {
             runCatching {
                 val conn = (URL(current).openConnection() as HttpURLConnection).apply {
-                    requestMethod = "HEAD"
+                    requestMethod = "GET"
                     instanceFollowRedirects = true
                     connectTimeout = 5000
                     readTimeout = 5000
-                    setRequestProperty("User-Agent", "Mozilla/5.0")
+                    setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/125.0 Mobile Safari/537.36")
                 }
                 conn.responseCode
                 val resolved = conn.url.toString()
@@ -271,6 +275,131 @@ object ZarditEngine {
         return listOfNotNull(direct, thumb)
             .sortedByDescending { if (croppedUrlRegex.containsMatchIn(it)) 0 else 1 }
             .firstOrNull()
+    }
+
+    private fun fetchInstagramApiWithCookies(context: Context, url: String): MediaPreview? {
+        val shortcode = Regex("""instagram\.com/(?:reel|reels|p|tv)/([A-Za-z0-9_-]+)""")
+            .find(url)?.groupValues?.getOrNull(1) ?: return null
+
+        return runCatching {
+            val cookieHeader = InstagramAuth.withTempCookieFile(context) { cookieFile ->
+                cookieFile.readLines()
+                    .filter { !it.startsWith("#") && it.isNotBlank() }
+                    .mapNotNull { line ->
+                        val cols = line.split("\t")
+                        if (cols.size >= 7) "${cols[5]}=${cols[6]}" else null
+                    }
+                    .joinToString("; ")
+            }
+            if (cookieHeader.isBlank()) return@runCatching null
+
+            val apiUrl = "https://www.instagram.com/p/$shortcode/?__a=1&__d=dis"
+            val conn = (URL(apiUrl).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 8000
+                readTimeout = 8000
+                instanceFollowRedirects = true
+                setRequestProperty("Cookie", cookieHeader)
+                setRequestProperty("X-IG-App-ID", "936619743392459")
+                setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/125.0 Mobile Safari/537.36")
+                setRequestProperty("Accept", "application/json")
+            }
+            val body = conn.inputStream.bufferedReader().use { it.readText() }
+            conn.disconnect()
+            if (body.isBlank() || !body.trimStart().startsWith("{")) return@runCatching null
+
+            val root = JSONObject(body)
+            val item = root.optJSONArray("items")?.optJSONObject(0)
+                ?: root.optJSONObject("graphql")?.optJSONObject("shortcode_media")
+                ?: return@runCatching null
+
+            val rawTitle = item.optJSONObject("caption")?.optString("text")
+                ?.ifBlank { null }
+                ?: "Instagram Post ($shortcode)"
+            val author = item.optJSONObject("user")?.optString("username")?.ifBlank { null }
+                ?: item.optJSONObject("owner")?.optString("username")?.ifBlank { null }
+                ?: "Instagram"
+
+            val imageUrls = linkedSetOf<String>()
+            val carousel = item.optJSONArray("carousel_media")
+            if (carousel != null && carousel.length() > 0) {
+                for (i in 0 until carousel.length()) {
+                    val slide = carousel.optJSONObject(i) ?: continue
+                    val bestImg = slide.optJSONObject("image_versions2")
+                        ?.optJSONArray("candidates")
+                        ?.let { candidates ->
+                            var best: String? = null
+                            var bestArea = -1
+                            for (j in 0 until candidates.length()) {
+                                val c = candidates.optJSONObject(j) ?: continue
+                                val u = c.optString("url").takeIf { it.startsWith("http") } ?: continue
+                                val area = c.optInt("width", 0) * c.optInt("height", 0)
+                                if (area >= bestArea) {
+                                    bestArea = area
+                                    best = u
+                                }
+                            }
+                            best
+                        }
+                    if (bestImg != null) imageUrls.add(bestImg)
+                }
+            }
+
+            // Single image (if not a video)
+            val videoVersions = item.optJSONArray("video_versions")
+            if (videoVersions != null && videoVersions.length() > 0 && imageUrls.isEmpty()) {
+                val vidUrl = videoVersions.optJSONObject(0)?.optString("url")?.takeIf { it.startsWith("http") }
+                val thumbUrl = item.optJSONObject("image_versions2")
+                    ?.optJSONArray("candidates")?.optJSONObject(0)?.optString("url")
+                if (vidUrl != null) {
+                    val size = probeUrlSize(vidUrl)
+                    return@runCatching MediaPreview(
+                        mediaId = shortcode,
+                        url = url,
+                        title = rawTitle,
+                        author = author,
+                        platform = "INSTAGRAM · VIDEO",
+                        durationText = formatDuration(item.optDouble("video_duration", 0.0).toInt()),
+                        thumbnailUrl = thumbUrl,
+                        videoOptions = listOf(
+                            VideoOption(1080, "Original", "HD", "MP4 · Direct stream", size),
+                        ),
+                        audioOptions = defaultAudioOptions.map {
+                            it.copy(approxSizeBytes = size?.let { s -> (s / 5L).coerceAtLeast(80_000L) })
+                        },
+                        directVideoUrl = vidUrl,
+                        usedInstagramAuth = true,
+                        sanitizedTitle = sanitizeTitle(rawTitle, "Instagram_$shortcode"),
+                    )
+                }
+            }
+
+            if (imageUrls.isEmpty()) {
+                val singleImg = item.optJSONObject("image_versions2")
+                    ?.optJSONArray("candidates")?.optJSONObject(0)?.optString("url")
+                    ?.takeIf { it.startsWith("http") }
+                    ?: item.optString("display_url").takeIf { it.startsWith("http") }
+                if (singleImg != null) imageUrls.add(singleImg)
+            }
+
+            if (imageUrls.isNotEmpty()) {
+                val list = imageUrls.toList()
+                return@runCatching MediaPreview(
+                    mediaId = shortcode,
+                    url = url,
+                    title = rawTitle,
+                    author = "$author · ${list.size} image${if (list.size == 1) "" else "s"}",
+                    platform = "INSTAGRAM · IMAGE",
+                    durationText = "${list.size} image${if (list.size == 1) "" else "s"}",
+                    thumbnailUrl = list.first(),
+                    videoOptions = emptyList(),
+                    audioOptions = emptyList(),
+                    imageUrls = list,
+                    usedInstagramAuth = true,
+                    sanitizedTitle = sanitizeTitle(rawTitle, "Instagram_$shortcode"),
+                )
+            }
+            null
+        }.getOrNull()
     }
 
     private fun fetchInstagramEmbedFallback(url: String): MediaPreview? {
@@ -403,10 +532,28 @@ object ZarditEngine {
             platform = "INSTAGRAM · VIDEO",
             durationText = formatDuration(durationSec),
             thumbnailUrl = thumb,
-            videoOptions = listOf(
-                VideoOption(1080, "1080p", "Full HD", "MP4 · Best available", probedSize),
-                VideoOption(720, "720p", "HD", "MP4 · Best available", probedSize),
-            ),
+            videoOptions = buildList {
+                val buckets = listOf(1080, 720, 480, 360)
+                if (formatsArr != null && formatsArr.length() > 0) {
+                    val seenHeights = linkedSetOf<Int>()
+                    for (i in 0 until formatsArr.length()) {
+                        val f = formatsArr.optJSONObject(i) ?: continue
+                        if (f.optString("vcodec") == "none") continue
+                        val eh = effectiveVideoHeight(f.optInt("width", 0), f.optInt("height", 0))
+                        val bucket = buckets.firstOrNull { eh in (it - 20)..(it + 20) } ?: continue
+                        if (seenHeights.add(bucket)) {
+                            val fmtUrl = f.optString("url").takeIf { it.startsWith("http") }
+                            val rawSize = f.optLong("filesize", 0L).takeIf { it > 0L }
+                                ?: f.optLong("filesize_approx", 0L).takeIf { it > 0L }
+                            val size = rawSize ?: fmtUrl?.let { probeUrlSize(it) } ?: probedSize
+                            add(VideoOption(bucket, "${bucket}p", qualityBadge(bucket), "MP4 · H.264", size))
+                        }
+                    }
+                }
+                if (isEmpty()) {
+                    add(VideoOption(1080, "Original", "MP4", "Best available stream", probedSize))
+                }
+            },
             audioOptions = defaultAudioOptions.map { opt ->
                 val est = if (durationSec > 0) {
                     (durationSec.toLong() * (opt.bitrateKbps ?: 128).toLong() * 1000L) / 8L
@@ -578,7 +725,13 @@ object ZarditEngine {
                 "No downloadable video or image was found at this link."
             else -> {
                 raw.lineSequence()
-                    .firstOrNull { it.isNotBlank() && !it.contains("github.com/yt-dlp") && !it.contains("yt-dlp -U") }
+                    .firstOrNull { line ->
+                        val trimmed = line.trim()
+                        trimmed.isNotBlank() &&
+                            !trimmed.startsWith("WARNING:", ignoreCase = true) &&
+                            !trimmed.contains("github.com/yt-dlp") &&
+                            !trimmed.contains("yt-dlp -U")
+                    }
                     ?.removePrefix("ERROR:")
                     ?.trim()
                     ?: "Could not fetch media info."
