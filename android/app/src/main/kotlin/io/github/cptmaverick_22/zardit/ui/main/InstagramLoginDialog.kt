@@ -2,6 +2,8 @@ package io.github.cptmaverick_22.zardit.ui.main
 
 import android.annotation.SuppressLint
 import android.webkit.CookieManager
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.layout.Arrangement
@@ -80,17 +82,33 @@ fun InstagramLoginDialog(
                         .fillMaxWidth()
                         .weight(1f),
                     factory = { ctx ->
-                        CookieManager.getInstance().setAcceptCookie(true)
+                        val cm = CookieManager.getInstance()
+                        cm.setAcceptCookie(true)
                         WebView(ctx).apply {
+                            cm.setAcceptThirdPartyCookies(this, true)
                             settings.javaScriptEnabled = true
                             settings.domStorageEnabled = true
+                            settings.databaseEnabled = true
+                            settings.loadWithOverviewMode = true
+                            settings.useWideViewPort = true
+                            settings.userAgentString =
+                                "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36"
                             @Suppress("DEPRECATION")
                             settings.saveFormData = false
+                            webChromeClient = WebChromeClient()
                             webViewClient = object : WebViewClient() {
+                                override fun shouldOverrideUrlLoading(
+                                    view: WebView?,
+                                    request: WebResourceRequest?,
+                                ): Boolean {
+                                    val scheme = request?.url?.scheme ?: return false
+                                    return scheme != "http" && scheme != "https"
+                                }
+
                                 override fun onPageFinished(view: WebView?, url: String?) {
                                     super.onPageFinished(view, url)
                                     if (finished) return
-                                    val raw = CookieManager.getInstance().getCookie("https://www.instagram.com")
+                                    val raw = cm.getCookie("https://www.instagram.com")
                                     val minimal = InstagramAuth.extractMinimalCookies(raw)
                                     if (minimal.isNotEmpty()) {
                                         finished = true
@@ -99,8 +117,8 @@ fun InstagramLoginDialog(
                                             clearHistory()
                                             clearCache(true)
                                         }
-                                        CookieManager.getInstance().removeAllCookies(null)
-                                        CookieManager.getInstance().flush()
+                                        cm.removeAllCookies(null)
+                                        cm.flush()
                                         onConnected()
                                     }
                                 }

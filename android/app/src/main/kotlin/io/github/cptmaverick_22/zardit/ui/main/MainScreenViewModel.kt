@@ -43,6 +43,7 @@ data class MainUiState(
     val selectedVideoHeight: Int? = null,
     val selectedAudioId: String = "mp3_192",
     val selectedImageFormat: ImageFormat = ImageFormat.ORIGINAL,
+    val selectedImageIndices: Set<Int> = emptySet(),
     val selectedPlaylistIndices: Set<Int> = emptySet(),
     val playlistRangeText: String = "",
     val existingDownloadPath: String? = null,
@@ -100,6 +101,7 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
                     preview = null,
                     existingDownloadPath = null,
                     selectedPlaylistIndices = emptySet(),
+                    selectedImageIndices = emptySet(),
                     playlistRangeText = "",
                 )
             }
@@ -162,6 +164,24 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         DownloadService.resetState()
         _uiState.update { it.copy(selectedImageFormat = format) }
         checkDuplicateSelection()
+    }
+
+    fun toggleImageIndex(index: Int) {
+        DownloadService.resetState()
+        _uiState.update { state ->
+            val updated = state.selectedImageIndices.toMutableSet()
+            if (!updated.add(index)) updated.remove(index)
+            state.copy(selectedImageIndices = updated)
+        }
+    }
+
+    fun selectAllImages() {
+        val total = _uiState.value.preview?.imageUrls?.size ?: return
+        _uiState.update { it.copy(selectedImageIndices = (0 until total).toSet()) }
+    }
+
+    fun selectNoneImages() {
+        _uiState.update { it.copy(selectedImageIndices = emptySet()) }
     }
 
     fun togglePlaylistIndex(index: Int) {
@@ -247,6 +267,7 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
                             preview = preview,
                             downloadMode = defaultMode,
                             selectedVideoHeight = defaultHeight,
+                            selectedImageIndices = preview.imageUrls.indices.toSet(),
                             selectedPlaylistIndices = allPlaylistIndices,
                             playlistRangeText = "",
                             fetchError = null,
@@ -329,6 +350,13 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
             return
         }
 
+        val chosenImages = if (current.downloadMode == DownloadMode.IMAGE && preview.imageUrls.isNotEmpty()) {
+            preview.imageUrls.filterIndexed { idx, _ -> idx in current.selectedImageIndices }
+                .ifEmpty { return }
+        } else {
+            preview.imageUrls
+        }
+
         DownloadService.start(
             context = app,
             url = preview.url,
@@ -339,9 +367,10 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
             videoHeight = current.selectedVideoHeight,
             audioId = current.selectedAudioId,
             imageFormat = current.selectedImageFormat,
-            imageUrls = preview.imageUrls,
+            imageUrls = chosenImages,
             directVideoUrl = preview.directVideoUrl,
             useInstagramCookies = preview.usedInstagramAuth,
+            customTitle = preview.sanitizedTitle,
         )
     }
 

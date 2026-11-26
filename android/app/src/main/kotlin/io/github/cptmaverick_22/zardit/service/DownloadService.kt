@@ -71,6 +71,7 @@ class DownloadService : Service() {
                 val batchIds = intent.getStringArrayListExtra(EXTRA_BATCH_IDS).orEmpty()
                 val directVideoUrl = intent.getStringExtra(EXTRA_DIRECT_VIDEO_URL)
                 val useInstagramCookies = intent.getBooleanExtra(EXTRA_USE_IG_COOKIES, false)
+                val customTitle = intent.getStringExtra(EXTRA_CUSTOM_TITLE)
 
                 startDownload(
                     url = url,
@@ -87,6 +88,7 @@ class DownloadService : Service() {
                     batchIds = batchIds,
                     directVideoUrl = directVideoUrl,
                     useInstagramCookies = useInstagramCookies,
+                    customTitle = customTitle,
                 )
             }
         }
@@ -108,6 +110,7 @@ class DownloadService : Service() {
         batchIds: List<String>,
         directVideoUrl: String?,
         useInstagramCookies: Boolean,
+        customTitle: String?,
     ) {
         ensureNotificationChannel()
         cancelled.set(false)
@@ -276,6 +279,7 @@ class DownloadService : Service() {
                     processId = pid,
                     directVideoUrl = directVideoUrl,
                     useInstagramCookies = useInstagramCookies,
+                    customTitle = customTitle,
                 ) { pct, statusLine ->
                     updateProgress(title, pct, statusLine)
                 }
@@ -434,6 +438,7 @@ class DownloadService : Service() {
         private const val EXTRA_BATCH_IDS = "extra_batch_ids"
         private const val EXTRA_DIRECT_VIDEO_URL = "extra_direct_video_url"
         private const val EXTRA_USE_IG_COOKIES = "extra_use_ig_cookies"
+        private const val EXTRA_CUSTOM_TITLE = "extra_custom_title"
 
         private val _state = MutableStateFlow<DownloadState>(DownloadState.Idle)
         val state: StateFlow<DownloadState> = _state.asStateFlow()
@@ -460,6 +465,7 @@ class DownloadService : Service() {
             batchIds: List<String> = emptyList(),
             directVideoUrl: String? = null,
             useInstagramCookies: Boolean = false,
+            customTitle: String? = null,
         ) {
             val intent = Intent(context, DownloadService::class.java).apply {
                 action = ACTION_START
@@ -477,6 +483,7 @@ class DownloadService : Service() {
                 putStringArrayListExtra(EXTRA_BATCH_IDS, ArrayList(batchIds))
                 putExtra(EXTRA_DIRECT_VIDEO_URL, directVideoUrl)
                 putExtra(EXTRA_USE_IG_COOKIES, useInstagramCookies)
+                putExtra(EXTRA_CUSTOM_TITLE, customTitle)
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)

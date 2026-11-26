@@ -10,6 +10,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -417,7 +418,7 @@ fun MainScreen(
                                 AsyncImage(
                                     model = preview.thumbnailUrl,
                                     contentDescription = preview.title,
-                                    contentScale = ContentScale.Crop,
+                                    contentScale = if (preview.imageUrls.isNotEmpty()) ContentScale.Fit else ContentScale.Crop,
                                     modifier = Modifier
                                         .width(124.dp)
                                         .height(72.dp)
@@ -464,6 +465,73 @@ fun MainScreen(
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
                                 )
+                            }
+                        }
+                    }
+
+                    // Carousel photo selector
+                    if (preview.imageUrls.size > 1) {
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                            shape = RoundedCornerShape(14.dp),
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(14.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        text = "Photos: ${ui.selectedImageIndices.size}/${preview.imageUrls.size}",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                    )
+                                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        TextButton(onClick = viewModel::selectAllImages) { Text("All") }
+                                        TextButton(onClick = viewModel::selectNoneImages) { Text("None") }
+                                    }
+                                }
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                ) {
+                                    preview.imageUrls.forEachIndexed { idx, imgUrl ->
+                                        val selected = idx in ui.selectedImageIndices
+                                        Surface(
+                                            shape = RoundedCornerShape(10.dp),
+                                            border = BorderStroke(
+                                                width = if (selected) 2.dp else 1.dp,
+                                                color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                                            ),
+                                            modifier = Modifier
+                                                .width(110.dp)
+                                                .clickable { viewModel.toggleImageIndex(idx) },
+                                        ) {
+                                            Box {
+                                                AsyncImage(
+                                                    model = imgUrl,
+                                                    contentDescription = "Photo ${idx + 1}",
+                                                    contentScale = ContentScale.Fit,
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .height(110.dp)
+                                                        .background(MaterialTheme.colorScheme.surfaceVariant),
+                                                )
+                                                Checkbox(
+                                                    checked = selected,
+                                                    onCheckedChange = { viewModel.toggleImageIndex(idx) },
+                                                    modifier = Modifier.align(Alignment.TopEnd),
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -765,9 +833,12 @@ fun MainScreen(
                         if (!isRunning && ui.preview != null && !isJustCompleted) {
                             val alreadyDownloaded = ui.existingDownloadPath != null
                             val playlistEmpty = ui.preview?.isPlaylist == true && ui.selectedPlaylistIndices.isEmpty()
+                            val imagesEmpty = ui.downloadMode == DownloadMode.IMAGE &&
+                                (ui.preview?.imageUrls?.isNotEmpty() == true) &&
+                                ui.selectedImageIndices.isEmpty()
                             Button(
                                 onClick = { triggerDownload() },
-                                enabled = !alreadyDownloaded && !playlistEmpty,
+                                enabled = !alreadyDownloaded && !playlistEmpty && !imagesEmpty,
                                 colors = ButtonDefaults.buttonColors(
                                     containerColor = MaterialTheme.colorScheme.primary,
                                 ),
@@ -782,6 +853,8 @@ fun MainScreen(
                                 val buttonText = when {
                                     alreadyDownloaded -> "Already Downloaded"
                                     ui.preview?.isPlaylist == true -> "Download (${ui.selectedPlaylistIndices.size} selected)"
+                                    ui.downloadMode == DownloadMode.IMAGE && (ui.preview?.imageUrls?.size ?: 0) > 1 ->
+                                        "Download (${ui.selectedImageIndices.size} selected)"
                                     else -> "Download"
                                 }
                                 Text(buttonText)

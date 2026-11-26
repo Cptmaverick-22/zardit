@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import android.text.Html
 import androidx.documentfile.provider.DocumentFile
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
@@ -41,10 +42,11 @@ object ZarditEngine {
     }
 
     fun fetchPreview(context: Context, url: String): MediaPreview {
-        val cleanUrl = url.trim()
-        require(cleanUrl.startsWith("http://") || cleanUrl.startsWith("https://")) {
+        val rawUrl = url.trim()
+        require(rawUrl.startsWith("http://") || rawUrl.startsWith("https://")) {
             "Enter a valid http/https link."
         }
+        val cleanUrl = normalizeAndResolveUrl(rawUrl)
 
         if (isPlaylistUrl(cleanUrl)) {
             fetchPlaylistPreview(cleanUrl)?.let { return it }
@@ -54,16 +56,20 @@ object ZarditEngine {
             YoutubeDL.getInstance().getInfo(cleanUrl)
         } catch (t: Throwable) {
             val msg = t.message.orEmpty()
-            if (detectPlatformName(cleanUrl) == "Instagram") {
+            val isIg = detectPlatformName(cleanUrl) == "Instagram"
+            if (isIg) {
                 fetchInstagramEmbedFallback(cleanUrl)?.let { return it }
                 if (InstagramAuth.hasSession(context)) {
                     fetchWithInstagramCookies(context, cleanUrl)?.let { return it }
                 }
             }
-            if (msg.contains("No video formats found", ignoreCase = true)) {
+            if (msg.contains("No video formats found", ignoreCase = true) ||
+                msg.contains("no video in this post", ignoreCase = true) ||
+                msg.contains("generic", ignoreCase = true)
+            ) {
                 fetchImageFallback(cleanUrl)?.let { return it }
             }
-            throw IllegalStateException(friendlyError(msg, detectPlatformName(cleanUrl) == "Instagram"))
+            throw IllegalStateException(friendlyError(msg, isIg))
         }
 
         val formats = info.formats.orEmpty()
@@ -163,18 +169,65 @@ object ZarditEngine {
             .uppercase(Locale.US)
         val kindLabel = if (isPureImage && imageUrls.isNotEmpty()) "IMAGE" else "VIDEO"
 
+        val rawTitle = decodeHtml(info.title?.ifBlank { null } ?: "Untitled media")
+        val cleanTitle = sanitizeTitle(rawTitle, fallback = platform)
+
         return MediaPreview(
             mediaId = info.id?.ifBlank { null } ?: cleanUrl.hashCode().toString(),
             url = cleanUrl,
-            title = info.title?.ifBlank { null } ?: "Untitled media",
-            author = info.uploader?.ifBlank { null } ?: "Unknown creator",
+            title = rawTitle,
+            author = decodeHtml(info.uploader?.ifBlank { null } ?: "Unknown creator"),
             platform = "$platform · $kindLabel",
             durationText = formatDuration(durationSec),
             thumbnailUrl = info.thumbnail?.takeIf { it.startsWith("https://") || it.startsWith("http://") },
             videoOptions = videoOptions,
             audioOptions = audioOptions,
             imageUrls = imageUrls,
+            sanitizedTitle = cleanTitle,
         )
+    }
+
+    private fun normalizeAndResolveUrl(url: String): String {
+        var current = url
+        val lower = current.lowercase(Locale.US)
+        if (("threads.com" in lower || "threads.net" in lower) && "/share/" in lower) {
+            runCatching {
+                val conn = (URL(current).openConnection() as HttpURLConnection).apply {
+                    requestMethod = "HEAD"
+                    instanceFollowRedirects = true
+                    connectTimeout = 5000
+                    readTimeout = 5000
+                    setRequestProperty("User-Agent", "Mozilla/5.0")
+                }
+                conn.responseCode
+                val resolved = conn.url.toString()
+                conn.disconnect()
+                if (resolved.startsWith("http")) current = resolved
+            }
+        }
+        if ("threads.com" in current.lowercase(Locale.US)) {
+            current = current.replace("threads.com", "threads.net", ignoreCase = true)
+        }
+        return current
+    }
+
+    fun decodeHtml(raw: String): String {
+        if (!raw.contains("&")) return raw
+        return runCatching {
+            Html.fromHtml(raw, Html.FROM_HTML_MODE_LEGACY).toString().trim()
+        }.getOrDefault(raw)
+    }
+
+    fun sanitizeTitle(raw: String, fallback: String = "Zardit"): String {
+        val decoded = decodeHtml(raw)
+        val noHashtags = decoded.replace(Regex("""#\S+"""), " ")
+        val noMentionsTail = noHashtags.replace(Regex("""\s+"""), " ").trim()
+        val safe = noMentionsTail
+            .replace(Regex("""[\\/:*?"<>|]"""), "-")
+            .replace(Regex("""[\r\n\t]+"""), " ")
+            .replace(Regex("""\s+"""), " ")
+            .trim(' ', '.', '-')
+        return safe.take(65).trim().ifBlank { fallback }
     }
 
     private fun fetchInstagramEmbedFallback(url: String): MediaPreview? {
@@ -197,10 +250,13 @@ object ZarditEngine {
                 ?: Regex("""<video[^>]+src=["'](https?://[^"']+)["']""", RegexOption.IGNORE_CASE)
                     .find(html)?.groupValues?.getOrNull(1)?.replace("&amp;", "&")
 
-            val displayUrl = Regex(""""display_url"\s*:\s*"(https?:[^"]+)"""")
-                .find(html)?.groupValues?.getOrNull(1)?.unescapeJsonUrl()
-                ?: Regex("""class=["'][^"']*EmbeddedMediaImage[^"']*["'][^>]+src=["'](https?://[^"']+)["']""", RegexOption.IGNORE_CASE)
-                    .find(html)?.groupValues?.getOrNull(1)?.replace("&amp;", "&")
+            val displayUrls = linkedSetOf<String>()
+            Regex(""""display_url"\s*:\s*"(https?:[^"]+)"""")
+                .findAll(html)
+                .forEach { m -> displayUrls.add(m.groupValues[1].unescapeJsonUrl()) }
+            Regex("""class=["'][^"']*EmbeddedMediaImage[^"']*["'][^>]+src=["'](https?://[^"']+)["']""", RegexOption.IGNORE_CASE)
+                .findAll(html)
+                .forEach { m -> displayUrls.add(m.groupValues[1].replace("&amp;", "&")) }
 
             if (!videoUrl.isNullOrBlank()) {
                 val size = probeUrlSize(videoUrl)
@@ -211,7 +267,7 @@ object ZarditEngine {
                     author = "Instagram",
                     platform = "INSTAGRAM · VIDEO",
                     durationText = "",
-                    thumbnailUrl = displayUrl,
+                    thumbnailUrl = displayUrls.firstOrNull(),
                     videoOptions = listOf(
                         VideoOption(1080, "Original", "HD", "MP4 · Direct stream", size),
                     ),
@@ -219,21 +275,24 @@ object ZarditEngine {
                         it.copy(approxSizeBytes = size?.let { s -> (s / 5L).coerceAtLeast(80_000L) })
                     },
                     directVideoUrl = videoUrl,
+                    sanitizedTitle = "Instagram_$shortcode",
                 )
             }
 
-            if (!displayUrl.isNullOrBlank()) {
+            if (displayUrls.isNotEmpty()) {
+                val list = displayUrls.toList()
                 return@runCatching MediaPreview(
                     mediaId = shortcode,
                     url = url,
                     title = "Instagram Post ($shortcode)",
-                    author = "Instagram",
+                    author = "Instagram · ${list.size} image${if (list.size == 1) "" else "s"}",
                     platform = "INSTAGRAM · IMAGE",
-                    durationText = "1 image",
-                    thumbnailUrl = displayUrl,
+                    durationText = "${list.size} image${if (list.size == 1) "" else "s"}",
+                    thumbnailUrl = list.first(),
                     videoOptions = emptyList(),
                     audioOptions = emptyList(),
-                    imageUrls = listOf(displayUrl),
+                    imageUrls = list,
+                    sanitizedTitle = "Instagram_$shortcode",
                 )
             }
             null
@@ -382,7 +441,7 @@ object ZarditEngine {
             if (imgUrl.isNullOrBlank() || !imgUrl.startsWith("http")) return@runCatching null
 
             val platform = detectPlatformName(url).uppercase(Locale.US)
-            val title = meta["og:title"] ?: meta["twitter:title"] ?: "Image post"
+            val title = decodeHtml(meta["og:title"] ?: meta["twitter:title"] ?: "Image post")
             MediaPreview(
                 mediaId = url.hashCode().toString(),
                 url = url,
@@ -394,6 +453,7 @@ object ZarditEngine {
                 videoOptions = emptyList(),
                 audioOptions = emptyList(),
                 imageUrls = listOf(imgUrl),
+                sanitizedTitle = sanitizeTitle(title, fallback = platform),
             )
         }.getOrNull()
     }
@@ -642,6 +702,7 @@ object ZarditEngine {
         processId: String,
         directVideoUrl: String? = null,
         useInstagramCookies: Boolean = false,
+        customTitle: String? = null,
         onProgress: (Float, String) -> Unit,
     ): SaveResult {
         val qTag = qualityTag(mode, videoHeight, audioOption)
@@ -651,11 +712,12 @@ object ZarditEngine {
         }
 
         try {
+            val safePrefix = customTitle?.takeIf { it.isNotBlank() }?.let { sanitizeTitle(it) }
             if (!directVideoUrl.isNullOrBlank() && mode == DownloadMode.VIDEO) {
                 onProgress(15f, "15% · Awakening Charizard…")
                 val id = Regex("""/(?:reel|p|tv)/([A-Za-z0-9_-]+)""").find(url)?.groupValues?.getOrNull(1)
                     ?: url.hashCode().toString()
-                val outFile = File(workDir, "Instagram [$qTag] [$id].mp4")
+                val outFile = File(workDir, "${safePrefix ?: "Instagram"} [$qTag] [$id].mp4")
                 val conn = (URL(directVideoUrl).openConnection() as HttpURLConnection).apply {
                     connectTimeout = 10000
                     readTimeout = 20000
@@ -686,7 +748,8 @@ object ZarditEngine {
             fun buildRequest(cookiePath: String?): YoutubeDLRequest = YoutubeDLRequest(url).apply {
                 addOption("--no-playlist")
                 addOption("--no-mtime")
-                addOption("-o", "${workDir.absolutePath}/%(title).120B [$qTag] [%(id)s].%(ext)s")
+                val titleTemplate = if (!safePrefix.isNullOrBlank()) safePrefix else "%(title).70B"
+                addOption("-o", "${workDir.absolutePath}/$titleTemplate [$qTag] [%(id)s].%(ext)s")
                 if (!cookiePath.isNullOrBlank()) {
                     addOption("--cookies", cookiePath)
                 }
@@ -786,7 +849,7 @@ object ZarditEngine {
         }
         onProgress(70f, "70% · Evolving image format…")
 
-        val safeTitle = title.replace(Regex("[\\\\/:*?\"<>|]"), "-").take(80).ifBlank { "image" }
+        val safeTitle = sanitizeTitle(title, fallback = "image")
         val fileName = "$safeTitle [${format.id}] [$mediaId].${format.ext}"
         val tempFile = File(context.cacheDir, fileName)
 
@@ -828,6 +891,11 @@ object ZarditEngine {
             context,
             YoutubeDL.UpdateChannel.STABLE,
         )
+        context.cacheDir.listFiles()?.forEach { f ->
+            if (f.name.endsWith(".zip") || f.name.endsWith(".tmp")) {
+                runCatching { f.delete() }
+            }
+        }
         val ver = runCatching { YoutubeDL.getInstance().version(context) }
             .getOrNull()
             ?.trim()
