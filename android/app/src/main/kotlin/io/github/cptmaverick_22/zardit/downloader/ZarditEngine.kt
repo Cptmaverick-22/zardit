@@ -513,7 +513,18 @@ object ZarditEngine {
         val thumb = bestUncroppedImageFromJson(json)
 
         var probedSize: Long? = null
+        var bestAudioSize = 0L
         if (formatsArr != null && formatsArr.length() > 0) {
+            for (i in 0 until formatsArr.length()) {
+                val f = formatsArr.optJSONObject(i) ?: continue
+                if (f.optString("vcodec") == "none" && f.optString("acodec") != "none") {
+                    val s = f.optLong("filesize", 0L).takeIf { it > 0L }
+                        ?: f.optLong("filesize_approx", 0L).takeIf { it > 0L }
+                        ?: f.optString("url").takeIf { it.startsWith("http") }?.let { probeUrlSize(it) }
+                        ?: 0L
+                    if (s > bestAudioSize) bestAudioSize = s
+                }
+            }
             val lastFmt = formatsArr.optJSONObject(formatsArr.length() - 1)
             val fmtUrl = lastFmt?.optString("url")?.takeIf { it.startsWith("http") }
             val rawSize = lastFmt?.optLong("filesize", 0L)?.takeIf { it > 0L }
@@ -553,20 +564,31 @@ object ZarditEngine {
             videoOptions = buildList {
                 val buckets = listOf(1080, 720, 480, 360)
                 if (formatsArr != null && formatsArr.length() > 0) {
-                    val seenHeights = linkedSetOf<Int>()
+                    val bestByBucket = mutableMapOf<Int, VideoOption>()
                     for (i in 0 until formatsArr.length()) {
                         val f = formatsArr.optJSONObject(i) ?: continue
                         if (f.optString("vcodec") == "none") continue
                         val eh = effectiveVideoHeight(f.optInt("width", 0), f.optInt("height", 0))
                         val bucket = buckets.firstOrNull { eh in (it - 20)..(it + 20) } ?: continue
-                        if (seenHeights.add(bucket)) {
-                            val fmtUrl = f.optString("url").takeIf { it.startsWith("http") }
-                            val rawSize = f.optLong("filesize", 0L).takeIf { it > 0L }
-                                ?: f.optLong("filesize_approx", 0L).takeIf { it > 0L }
-                            val size = rawSize ?: fmtUrl?.let { probeUrlSize(it) } ?: probedSize
-                            add(VideoOption(bucket, "${bucket}p", qualityBadge(bucket), "MP4 · H.264", size))
+                        val fmtUrl = f.optString("url").takeIf { it.startsWith("http") }
+                        val rawSize = f.optLong("filesize", 0L).takeIf { it > 0L }
+                            ?: f.optLong("filesize_approx", 0L).takeIf { it > 0L }
+                            ?: fmtUrl?.let { probeUrlSize(it) }
+                        val needsAudio = f.optString("acodec") == "none"
+                        val totalSize = rawSize?.let { it + (if (needsAudio) bestAudioSize else 0L) } ?: probedSize
+                        val candidate = VideoOption(
+                            bucket,
+                            "${bucket}p",
+                            qualityBadge(bucket),
+                            "MP4 · H.264",
+                            totalSize,
+                        )
+                        val prev = bestByBucket[bucket]
+                        if (prev == null || (candidate.approxSizeBytes ?: 0L) > (prev.approxSizeBytes ?: 0L)) {
+                            bestByBucket[bucket] = candidate
                         }
                     }
+                    addAll(bestByBucket.values.sortedByDescending { it.height })
                 }
                 if (isEmpty()) {
                     add(VideoOption(1080, "Original", "MP4", "Best available stream", probedSize))
@@ -652,21 +674,33 @@ object ZarditEngine {
     }
 
     private fun fetchWebMetaFallback(url: String): MediaPreview? {
-        for (ua in listOf(
-            "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
-            "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/125.0 Mobile Safari/537.36",
-        )) {
+        val isThreads = detectPlatformName(url) == "Threads"
+        val candidateTargets = buildList {
+            if (isThreads && "/post/" in url) {
+                val base = url.substringBefore("?").trimEnd('/')
+                add("$base/embed" to "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/125.0 Mobile Safari/537.36")
+            }
+            add(url to "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/125.0 Mobile Safari/537.36")
+            add(url to "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)")
+        }
+
+        var firstImageFallback: MediaPreview? = null
+        val videoVersionsBlockRegex = Regex(""""video_versions"\s*:\s*\[(.*?)\]""", RegexOption.DOT_MATCHES_ALL)
+        val urlInsideJsonRegex = Regex(""""url"\s*:\s*"(https?:[^"]+)"""")
+
+        for ((targetUrl, ua) in candidateTargets) {
             val preview = runCatching {
-                val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                val conn = (URL(targetUrl).openConnection() as HttpURLConnection).apply {
                     connectTimeout = 8000
                     readTimeout = 8000
                     instanceFollowRedirects = true
                     setRequestProperty("User-Agent", ua)
+                    setRequestProperty("Accept-Language", "en-US,en;q=0.9")
                 }
                 val code = conn.responseCode
-                val html = conn.inputStream.bufferedReader().use { it.readText().take(768 * 1024) }
+                val html = conn.inputStream.bufferedReader().use { it.readText().take(1024 * 1024) }
                 conn.disconnect()
-                DiagnosticLog.log("WebMeta", "HTTP $code ua=${ua.take(18)} len=${html.length}")
+                DiagnosticLog.log("WebMeta", "target=${targetUrl.takeLast(24)} HTTP $code len=${html.length}")
 
                 val meta = mutableMapOf<String, String>()
                 ogTagRegex.findAll(html).forEach { m ->
@@ -681,14 +715,18 @@ object ZarditEngine {
                 val title = decodeHtml(meta["og:title"] ?: meta["twitter:title"] ?: "$platform post")
                 val imgUrl = meta["og:image:secure_url"] ?: meta["og:image"] ?: meta["twitter:image"]
 
+                val videoVersionsUrl = videoVersionsBlockRegex.find(html)?.groupValues?.getOrNull(1)?.let { block ->
+                    urlInsideJsonRegex.find(block)?.groupValues?.getOrNull(1)?.unescapeJsonUrl()
+                }
                 val videoUrl = (meta["og:video:secure_url"] ?: meta["og:video"] ?: meta["twitter:player:stream"])
                     ?.takeIf { it.startsWith("http") }
+                    ?: videoVersionsUrl
                     ?: Regex(""""video_url"\s*:\s*"(https?:[^"]+)"""")
                         .find(html)?.groupValues?.getOrNull(1)?.unescapeJsonUrl()
-                    ?: Regex(""""video_versions"\s*:\s*\[\s*\{[^}]*"url"\s*:\s*"(https?:[^"]+)"""")
-                        .find(html)?.groupValues?.getOrNull(1)?.unescapeJsonUrl()
-                    ?: Regex("""<video[^>]+src=["'](https?://[^"']+)["']""", RegexOption.IGNORE_CASE)
+                    ?: Regex("""<(?:video|source)[^>]+src=["'](https?://[^"']+)["']""", RegexOption.IGNORE_CASE)
                         .find(html)?.groupValues?.getOrNull(1)?.replace("&amp;", "&")
+                    ?: Regex("""(https?:\\?/\\?/[^"'\s\\]+\.mp4[^"'\s\\]*)""", RegexOption.IGNORE_CASE)
+                        .find(html)?.groupValues?.getOrNull(1)?.unescapeJsonUrl()
 
                 if (!videoUrl.isNullOrBlank()) {
                     val size = probeUrlSize(videoUrl)
@@ -709,8 +747,8 @@ object ZarditEngine {
                     )
                 }
 
-                if (!imgUrl.isNullOrBlank() && imgUrl.startsWith("http")) {
-                    return@runCatching MediaPreview(
+                if (!imgUrl.isNullOrBlank() && imgUrl.startsWith("http") && firstImageFallback == null) {
+                    firstImageFallback = MediaPreview(
                         mediaId = url.hashCode().toString(),
                         url = url,
                         title = title,
@@ -731,7 +769,7 @@ object ZarditEngine {
 
             if (preview != null) return preview
         }
-        return null
+        return firstImageFallback
     }
 
     private fun detectPlatformName(url: String): String {
@@ -1062,37 +1100,43 @@ object ZarditEngine {
             }
 
             // Video mode (no FFmpeg):
-            // Try separate MP4 video + M4A audio & mux natively with MediaMuxer for >720p, or direct MP4 when single stream.
+            // Try separate MP4 video + M4A audio & mux natively with MediaMuxer for >720p, or fall back to single muxed stream.
             val h = videoHeight ?: 1080
-            val isYouTube = detectPlatformName(url) == "YouTube"
-            if (isYouTube && h > 720) {
+            if (h > 720) {
                 val vidTemp = File(workDir, "video_only.mp4")
                 val audTemp = File(workDir, "audio_only.m4a")
-                val vidReq = YoutubeDLRequest(url).apply {
-                    addOption("--no-playlist")
-                    addOption("--no-mtime")
-                    addOption("-f", "bestvideo[height<=$h][vcodec^=avc1][ext=mp4]/bestvideo[height<=$h][ext=mp4]")
-                    addOption("-o", vidTemp.absolutePath)
-                }
-                runRequest(vidReq)
+                val muxedResult = runCatching {
+                    val vidReq = YoutubeDLRequest(url).apply {
+                        addOption("--no-playlist")
+                        addOption("--no-mtime")
+                        addOption("-f", "bestvideo[height<=$h][vcodec^=avc1][ext=mp4]/bestvideo[height<=$h][ext=mp4]")
+                        addOption("-o", vidTemp.absolutePath)
+                    }
+                    runRequest(vidReq)
 
-                val audReq = YoutubeDLRequest(url).apply {
-                    addOption("--no-playlist")
-                    addOption("--no-mtime")
-                    addOption("-f", "bestaudio[ext=m4a]")
-                    addOption("-o", audTemp.absolutePath)
-                }
-                runRequest(audReq)
+                    val audReq = YoutubeDLRequest(url).apply {
+                        addOption("--no-playlist")
+                        addOption("--no-mtime")
+                        addOption("-f", "bestaudio[ext=m4a]")
+                        addOption("-o", audTemp.absolutePath)
+                    }
+                    runRequest(audReq)
 
-                if (vidTemp.isFile && audTemp.isFile) {
-                    onProgress(95f, ZarditFlavor.formatProgressLine("ffmpeg", 95f))
-                    val id = Regex("""(?:v=|youtu\.be/|shorts/)([A-Za-z0-9_-]{11})""")
-                        .find(url)?.groupValues?.getOrNull(1) ?: url.hashCode().toString()
-                    val finalName = "${safePrefix ?: "Video"} [$qTag] [$id].mp4"
-                    val muxedOut = File(workDir, finalName)
-                    NativeMuxer.muxMp4(vidTemp, audTemp, muxedOut)
-                    return saveOutputFile(context, muxedOut, mode, treeUri)
-                }
+                    if (vidTemp.isFile && vidTemp.length() > 0L && audTemp.isFile && audTemp.length() > 0L) {
+                        onProgress(95f, ZarditFlavor.formatProgressLine("ffmpeg", 95f))
+                        val id = Regex("""(?:v=|youtu\.be/|shorts/|reel/|p/)([A-Za-z0-9_-]{6,})""")
+                            .find(url)?.groupValues?.getOrNull(1) ?: url.hashCode().toString()
+                        val finalName = "${safePrefix ?: "Video"} [$qTag] [$id].mp4"
+                        val muxedOut = File(workDir, finalName)
+                        NativeMuxer.muxMp4(vidTemp, audTemp, muxedOut)
+                        saveOutputFile(context, muxedOut, mode, treeUri)
+                    } else {
+                        null
+                    }
+                }.getOrNull()
+                if (muxedResult != null) return muxedResult
+                vidTemp.delete()
+                audTemp.delete()
             }
 
             // Single pre-muxed stream (YouTube <=720p, Instagram, Threads, Reddit, X, Facebook)
