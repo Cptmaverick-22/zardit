@@ -101,7 +101,7 @@ chmod +x Zardit-*-x86_64.AppImage
 - Print diagnostics: `./Zardit-*-x86_64.AppImage --diagnostics`
 - Register desktop app-menu icon & `zardit` / `zardit-cli` commands locally:
   ```bash
-  ./packaging/linux/install_local.sh ~/Applications/Zardit-1.4.2-x86_64.AppImage
+  ./packaging/linux/install_local.sh ~/Applications/Zardit-<version>-x86_64.AppImage
   ```
   *(Run `./packaging/linux/install_local.sh` without arguments to create desktop/CLI launchers backed by your local `.venv`.)*
 
@@ -375,7 +375,7 @@ zardit/
 ```bash
 pip install -r requirements-dev.txt
 QT_QPA_PLATFORM=offscreen python -m unittest discover -s tests -v
-python -m pyflakes config.py desktop.py downloader.py gui.py history.py logs.py main.py theme.py updater.py zardit_app.py tests/test_ui.py tests/test_names.py tests/test_resolution.py
+python -m pyflakes config.py desktop.py downloader.py gui.py history.py logs.py main.py theme.py updater.py zardit_app.py zardit_core/*.py tests/*.py
 ```
 
 ### Build Packages Locally

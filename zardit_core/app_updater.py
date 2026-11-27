@@ -88,6 +88,83 @@ def _state_file() -> Path:
     return _state_dir() / "state.json"
 
 
+def _applied_marker_file() -> Path:
+    return _state_dir() / "update_applied.json"
+
+
+def _failed_marker_file() -> Path:
+    return _state_dir() / "update_failed.json"
+
+
+def finalize_pending_update(now: float | None = None) -> str | None:
+    """Reconcile asynchronous self-update markers into persistent update state.
+
+    Returns a recovery error message if a previous swap reported failure, else None.
+    """
+
+    state = _read_state()
+    pending_sha = str(state.get("pending_asset_sha256") or "")
+    applied_file = _applied_marker_file()
+    failed_file = _failed_marker_file()
+
+    if applied_file.is_file():
+        try:
+            marker = json.loads(applied_file.read_text(encoding="utf-8"))
+            sha = str(marker.get("sha256") or "").lower()
+        except (OSError, ValueError):
+            sha = ""
+        applied_file.unlink(missing_ok=True)
+        failed_file.unlink(missing_ok=True)
+        if re.fullmatch(r"[0-9a-f]{64}", sha):
+            _write_state(
+                installed_asset_sha256=sha,
+                available=False,
+                pending_asset_sha256="",
+                pending_install_mode="",
+                pending_target="",
+                pending_staged_dir="",
+                pending_started_at=0,
+                last_update_error="",
+            )
+            return None
+
+    if failed_file.is_file():
+        try:
+            err_data = json.loads(failed_file.read_text(encoding="utf-8"))
+            err_msg = str(err_data.get("error") or "").strip()
+        except (OSError, ValueError):
+            err_msg = ""
+        failed_file.unlink(missing_ok=True)
+        staged = str(state.get("pending_staged_dir") or "")
+        msg = err_msg or "Previous automatic update failed."
+        if staged and staged not in msg:
+            msg = f"{msg} Staged files kept at: {staged}"
+        _write_state(
+            available=True,
+            pending_asset_sha256="",
+            pending_install_mode="",
+            pending_target="",
+            pending_staged_dir="",
+            pending_started_at=0,
+            last_update_error=msg,
+        )
+        return msg
+
+    if pending_sha:
+        started = float(state.get("pending_started_at") or 0)
+        cur = now if now is not None else time.time()
+        if started > 0 and (cur - started) > 30:
+            _write_state(
+                available=True,
+                pending_asset_sha256="",
+                pending_install_mode="",
+                pending_target="",
+                pending_staged_dir="",
+                pending_started_at=0,
+            )
+    return None
+
+
 def _read_state() -> dict:
     with _state_lock:
         try:
@@ -317,6 +394,7 @@ def _fetch_tag_commit(tag_name: str, timeout: int) -> str:
 def check_for_app_update(timeout: int = TIMEOUT, check_same_tag_commit: bool = True) -> AppUpdateInfo:
     """Check GitHub Releases for a newer Zardit version or refreshed same-tag build."""
 
+    finalize_pending_update()
     release = _get_json(RELEASES_LATEST_API, timeout=timeout)
     tag_name = str(release.get("tag_name") or "").strip()
     if not tag_name:
@@ -461,6 +539,7 @@ def background_check_app_update(now: float | None = None) -> AppUpdateInfo | Non
     """Once-a-day silent check for app updates. Returns AppUpdateInfo if actionable, else None."""
 
     try:
+        finalize_pending_update(now=now)
         if not auto_check_enabled():
             return None
 
@@ -574,21 +653,38 @@ def _launch_linux_appimage_swap(
     staged_file: Path,
     target_appimage: Path,
     pid: int,
+    asset_sha256: str = "",
 ) -> None:
+    state_dir = _state_dir()
+    state_dir.mkdir(parents=True, exist_ok=True)
+    applied_marker = _applied_marker_file()
+    failed_marker = _failed_marker_file()
+    applied_marker.unlink(missing_ok=True)
+    failed_marker.unlink(missing_ok=True)
+
     script_path = staged_file.parent / "apply_appimage_update.sh"
+    applied_json = json.dumps({"sha256": asset_sha256})
+    failed_json = json.dumps({
+        "error": "Could not replace the running AppImage. Staged update files were kept."
+    })
     script = (
         "#!/bin/sh\n"
         f"PID={int(pid)}\n"
         f"STAGED={shlex.quote(str(staged_file))}\n"
         f"TARGET={shlex.quote(str(target_appimage))}\n"
         f"STAGING_DIR={shlex.quote(str(staged_file.parent))}\n"
+        f"APPLIED_MARKER={shlex.quote(str(applied_marker))}\n"
+        f"FAILED_MARKER={shlex.quote(str(failed_marker))}\n"
         "i=0\n"
         "while kill -0 \"$PID\" 2>/dev/null && [ \"$i\" -lt 100 ]; do\n"
         "  sleep 0.2\n"
         "  i=$((i + 1))\n"
         "done\n"
-        "chmod 755 \"$STAGED\" || exit 1\n"
-        "mv -f \"$STAGED\" \"$TARGET\" || exit 1\n"
+        "if ! chmod 755 \"$STAGED\" || ! mv -f \"$STAGED\" \"$TARGET\"; then\n"
+        f"  printf '%s' {shlex.quote(failed_json)} > \"$FAILED_MARKER\"\n"
+        "  exit 1\n"
+        "fi\n"
+        f"printf '%s' {shlex.quote(applied_json)} > \"$APPLIED_MARKER\"\n"
         "rm -rf \"$STAGING_DIR\" 2>/dev/null || true\n"
         "unset APPDIR APPIMAGE ARGV0 OWD PYTHONHOME PYTHONPATH LD_LIBRARY_PATH QT_PLUGIN_PATH QML2_IMPORT_PATH\n"
         "nohup \"$TARGET\" >/dev/null 2>&1 </dev/null &\n"
@@ -605,13 +701,30 @@ def _launch_linux_appimage_swap(
     )
 
 
-def _launch_windows_portable_swap(staged_root: Path, install_dir: Path, pid: int) -> None:
+def _launch_windows_portable_swap(
+    staged_root: Path,
+    install_dir: Path,
+    pid: int,
+    asset_sha256: str = "",
+) -> None:
+    state_dir = _state_dir()
+    state_dir.mkdir(parents=True, exist_ok=True)
+    applied_marker = _applied_marker_file()
+    failed_marker = _failed_marker_file()
+    applied_marker.unlink(missing_ok=True)
+    failed_marker.unlink(missing_ok=True)
+
     batch_path = staged_root.parent / "apply_portable_update.cmd"
+    backup_dir = staged_root.parent / "backup"
     # Determine whether the zip extracted a nested Zardit/ folder or direct files
     source_dir = staged_root / "Zardit" if (staged_root / "Zardit" / "Zardit.exe").is_file() else staged_root
     if not (source_dir / "Zardit.exe").is_file():
         raise AppUpdateError("Portable update archive is missing Zardit.exe.")
 
+    applied_json = json.dumps({"sha256": asset_sha256})
+    failed_json = json.dumps({
+        "error": "Could not copy all portable update files because files remained locked."
+    })
     script = (
         "@echo off\r\n"
         "chcp 65001 >NUL\r\n"
@@ -621,11 +734,13 @@ def _launch_windows_portable_swap(staged_root: Path, install_dir: Path, pid: int
         f"tasklist /FI \"PID eq {pid}\" 2>NUL | find /I \"{pid}\" >NUL\r\n"
         "if not errorlevel 1 (\r\n"
         "  set /a wait_tries+=1\r\n"
-        "  if %wait_tries% GEQ 25 goto copyloop_init\r\n"
+        "  if %wait_tries% GEQ 25 goto backup_old\r\n"
         "  ping -n 2 127.0.0.1 >NUL\r\n"
         "  goto waitloop\r\n"
         ")\r\n"
-        ":copyloop_init\r\n"
+        ":backup_old\r\n"
+        f"mkdir \"{backup_dir}\" 2>NUL\r\n"
+        f"if exist \"{install_dir}\\Zardit.exe\" copy /Y \"{install_dir}\\Zardit.exe\" \"{backup_dir}\\Zardit.exe\" >NUL 2>&1\r\n"
         "set /a copy_tries=0\r\n"
         ":copyloop\r\n"
         f"xcopy /E /Y /I /Q \"{source_dir}\\*\" \"{install_dir}\\\" >NUL 2>&1\r\n"
@@ -635,7 +750,11 @@ def _launch_windows_portable_swap(staged_root: Path, install_dir: Path, pid: int
         "    ping -n 2 127.0.0.1 >NUL\r\n"
         "    goto copyloop\r\n"
         "  )\r\n"
+        f"  if exist \"{backup_dir}\\Zardit.exe\" copy /Y \"{backup_dir}\\Zardit.exe\" \"{install_dir}\\Zardit.exe\" >NUL 2>&1\r\n"
+        f"  >\"{failed_marker}\" echo {failed_json}\r\n"
+        "  exit /b 1\r\n"
         ")\r\n"
+        f">\"{applied_marker}\" echo {applied_json}\r\n"
         f"start \"\" \"{install_dir}\\Zardit.exe\"\r\n"
         f"rmdir /S /Q \"{staged_root.parent}\" 2>NUL\r\n"
     )
@@ -684,8 +803,20 @@ def install_app_update(info: AppUpdateInfo, report=None) -> tuple[str, Path | No
             extracted = staging / "unpacked"
             _safe_extract_zip(zip_path, extracted)
             install_dir = Path(sys.executable).resolve().parent
-            _write_state(installed_asset_sha256=info.asset.sha256, available=False)
-            _launch_windows_portable_swap(extracted, install_dir, os.getpid())
+            _write_state(
+                pending_asset_sha256=info.asset.sha256,
+                pending_install_mode=mode,
+                pending_target=str(install_dir),
+                pending_staged_dir=str(staging),
+                pending_started_at=time.time(),
+                available=True,
+            )
+            _launch_windows_portable_swap(
+                extracted,
+                install_dir,
+                os.getpid(),
+                asset_sha256=info.asset.sha256,
+            )
             return ("portable_updating", install_dir)
         except Exception:
             shutil.rmtree(staging, ignore_errors=True)
@@ -702,10 +833,22 @@ def install_app_update(info: AppUpdateInfo, report=None) -> tuple[str, Path | No
                     report(f"Downloading {info.asset.name}…")
                 staged_path = download_and_verify_asset(info.asset, staging, report=report)
                 os.chmod(staged_path, 0o755)
-                _write_state(installed_asset_sha256=info.asset.sha256, available=False)
+                _write_state(
+                    pending_asset_sha256=info.asset.sha256,
+                    pending_install_mode=mode,
+                    pending_target=str(target_appimage),
+                    pending_staged_dir=str(staging),
+                    pending_started_at=time.time(),
+                    available=True,
+                )
                 if report:
                     report("Applying verified AppImage update…")
-                _launch_linux_appimage_swap(staged_path, target_appimage, os.getpid())
+                _launch_linux_appimage_swap(
+                    staged_path,
+                    target_appimage,
+                    os.getpid(),
+                    asset_sha256=info.asset.sha256,
+                )
                 return ("appimage_updating", target_appimage)
             except Exception:
                 shutil.rmtree(staging, ignore_errors=True)

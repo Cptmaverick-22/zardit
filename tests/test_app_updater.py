@@ -294,12 +294,76 @@ class AppUpdaterTests(unittest.TestCase):
 
         self.assertEqual(action, "appimage_updating")
         self.assertEqual(target, current_appimage.resolve())
+        # Should NOT record installed_asset_sha256 before the swapper verifies success.
+        state_before = app_updater._read_state()
+        self.assertEqual(state_before.get("installed_asset_sha256", ""), "")
+        self.assertEqual(state_before.get("pending_asset_sha256"), sha)
+
         popen_mock.assert_called_once()
         cmd = popen_mock.call_args.args[0]
         self.assertEqual(cmd[0], "/bin/sh")
         script_path = Path(cmd[1])
         self.assertTrue(script_path.is_file())
-        self.assertIn("unset APPDIR APPIMAGE ARGV0 OWD PYTHONHOME PYTHONPATH LD_LIBRARY_PATH", script_path.read_text(encoding="utf-8"))
+        script_text = script_path.read_text(encoding="utf-8")
+        self.assertIn("unset APPDIR APPIMAGE ARGV0 OWD PYTHONHOME PYTHONPATH LD_LIBRARY_PATH", script_text)
+        self.assertIn("FAILED_MARKER=", script_text)
+        self.assertIn("APPLIED_MARKER=", script_text)
+
+    def test_finalize_pending_update_handles_success_and_failure(self):
+        sha = "f" * 64
+        app_updater._write_state(
+            pending_asset_sha256=sha,
+            pending_staged_dir="/tmp/staged-zardit",
+            pending_started_at=1000.0,
+            available=True,
+        )
+        # Failure marker preserves staged folder, keeps available=True, and does NOT mark installed.
+        app_updater._state_dir().mkdir(parents=True, exist_ok=True)
+        app_updater._failed_marker_file().write_text(
+            '{"error": "Copy failed because files were locked."}',
+            encoding="utf-8",
+        )
+        err = app_updater.finalize_pending_update(now=1005.0)
+        self.assertIsNotNone(err)
+        self.assertIn("Copy failed", err)
+        self.assertIn("/tmp/staged-zardit", err)
+        st_fail = app_updater._read_state()
+        self.assertEqual(st_fail.get("installed_asset_sha256", ""), "")
+        self.assertTrue(st_fail.get("available"))
+        self.assertEqual(st_fail.get("pending_asset_sha256"), "")
+
+        # Applied marker promotes sha into installed_asset_sha256 and clears pending state.
+        app_updater._write_state(pending_asset_sha256=sha, pending_started_at=1000.0, available=True)
+        app_updater._applied_marker_file().write_text(
+            f'{{"sha256": "{sha}"}}',
+            encoding="utf-8",
+        )
+        self.assertIsNone(app_updater.finalize_pending_update(now=1005.0))
+        st_ok = app_updater._read_state()
+        self.assertEqual(st_ok.get("installed_asset_sha256"), sha)
+        self.assertFalse(st_ok.get("available"))
+
+    def test_windows_portable_swap_script_stops_and_preserves_staging_on_copy_error(self):
+        staging = Path(self.temp.name) / "zardit-portable-test"
+        staged_root = staging / "unpacked"
+        staged_root.mkdir(parents=True)
+        (staged_root / "Zardit.exe").write_bytes(b"exe")
+        install_dir = Path(self.temp.name) / "install"
+        install_dir.mkdir(parents=True)
+
+        with mock.patch.object(app_updater.subprocess, "Popen") as popen_mock:
+            app_updater._launch_windows_portable_swap(
+                staged_root,
+                install_dir,
+                pid=4321,
+                asset_sha256="a" * 64,
+            )
+
+        popen_mock.assert_called_once()
+        cmd_script = (staging / "apply_portable_update.cmd").read_text(encoding="utf-8")
+        self.assertIn("exit /b 1", cmd_script)
+        self.assertIn("update_failed.json", cmd_script)
+        self.assertIn("backup\\Zardit.exe", cmd_script)
 
 
 if __name__ == "__main__":
