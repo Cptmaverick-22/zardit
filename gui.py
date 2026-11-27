@@ -48,6 +48,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QStackedWidget,
+    QSystemTrayIcon,
     QVBoxLayout,
     QWidget,
 )
@@ -57,6 +58,8 @@ import updater
 updater.activate()   # Must run before anything imports yt-dlp.
 
 from updater import UpdateError
+from zardit_core import app_updater
+from zardit_core.app_updater import AppUpdateError
 
 from config import (
     APP_LICENSE,
@@ -67,6 +70,7 @@ from config import (
     IG_BROWSER_LABELS,
     IG_BROWSERS,
     audio_label,
+    get_build_info,
     get_download_dir,
     get_ig_browser,
     image_label,
@@ -156,7 +160,7 @@ class TaskThread(QThread):
         try:
             self.done.emit(self.function(self))
 
-        except (DownloadError, UpdateError) as error:
+        except (DownloadError, UpdateError, AppUpdateError) as error:
             self.failed.emit(str(error))
 
         except Exception as error:
@@ -210,12 +214,13 @@ class QtReporter(Reporter):
 
 
 class UpdateNotice(QObject):
-    """Looks for a newer yt-dlp in the background and reports what it finds.
+    """Looks for newer yt-dlp and Zardit app builds in the background.
 
     A plain daemon thread is used, so it can never keep the app from closing.
     """
 
     found = Signal(str)
+    app_found = Signal(object)
 
     def start(self):
         threading.Thread(target=self._run, daemon=True).start()
@@ -227,7 +232,14 @@ class UpdateNotice(QObject):
             try:
                 self.found.emit(version)
             except RuntimeError:
-                pass   # The window was closed in the meantime.
+                return   # The window was closed in the meantime.
+
+        app_info = app_updater.background_check_app_update()
+        if app_info and app_info.available:
+            try:
+                self.app_found.emit(app_info)
+            except RuntimeError:
+                pass
 
 
 class PreviewNotice(QObject):
@@ -908,7 +920,12 @@ class AboutDialog(QDialog):
         tag_lbl = QLabel(APP_TAGLINE)
         tag_lbl.setObjectName("mutedText")
         tag_lbl.setWordWrap(True)
-        lic_lbl = QLabel(f"License: {APP_LICENSE}  ·  Built with yt-dlp, FFmpeg, Deno, PySide6 & Rich")
+        build = get_build_info()
+        commit = (build.get("commit") or "")[:7]
+        build_bit = f"  ·  Build {commit}" if commit else ""
+        lic_lbl = QLabel(
+            f"License: {APP_LICENSE}{build_bit}  ·  Built with yt-dlp, FFmpeg, Deno, PySide6 & Rich"
+        )
         lic_lbl.setObjectName("mutedText")
         lic_lbl.setWordWrap(True)
         title_col.addWidget(title_lbl)
@@ -931,12 +948,239 @@ class AboutDialog(QDialog):
         layout.addWidget(scroll, 1)
 
         buttons = QHBoxLayout()
+        if hasattr(parent, "open_updates_dialog"):
+            updates_btn = QPushButton("Check for updates")
+            updates_btn.setObjectName("secondaryBtn")
+            updates_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            updates_btn.clicked.connect(lambda: (self.accept(), parent.open_updates_dialog()))
+            buttons.addWidget(updates_btn)
         buttons.addStretch(1)
         close_btn = QPushButton("Close")
         close_btn.setObjectName("primaryBtn")
         close_btn.clicked.connect(self.accept)
         buttons.addWidget(close_btn)
         layout.addLayout(buttons)
+
+
+class UpdatesDialog(QDialog):
+    """Minimal unified updater for both Zardit App and the yt-dlp engine."""
+
+    def __init__(self, parent=None, app_info=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"{APP_NAME} Updates")
+        self.resize(520, 420)
+        icon = load_app_icon()
+        if not icon.isNull():
+            self.setWindowIcon(icon)
+
+        self.main_window = parent
+        self.app_info = app_info
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(12)
+
+        # Card 1: Zardit Application
+        app_card = QFrame()
+        app_card.setObjectName("card")
+        app_col = QVBoxLayout(app_card)
+        app_col.setContentsMargins(14, 12, 14, 12)
+        app_col.setSpacing(8)
+
+        mode_labels = {
+            "windows_installer": "Windows Installer",
+            "windows_portable": "Windows Portable",
+            "linux_appimage": "Linux AppImage",
+            "windows_source": "Source (Windows)",
+            "source": "Source Install",
+        }
+        mode_text = mode_labels.get(app_updater.detect_install_mode(), "Source")
+        build = get_build_info()
+        short_sha = (build.get("commit") or "")[:7]
+        ver_meta = f"v{APP_VERSION} ({short_sha}) · {mode_text}" if short_sha else f"v{APP_VERSION} · {mode_text}"
+
+        app_top = QHBoxLayout()
+        app_title = QLabel(f"{APP_NAME} App")
+        app_title.setObjectName("sectionTitle")
+        self.app_ver_badge = QLabel(ver_meta)
+        self.app_ver_badge.setObjectName("mutedText")
+        app_top.addWidget(app_title)
+        app_top.addStretch(1)
+        app_top.addWidget(self.app_ver_badge)
+        app_col.addLayout(app_top)
+
+        self.app_status_lbl = plain_label(
+            "Check GitHub Releases for new versions or refreshed builds.",
+            object_name="mutedText",
+        )
+        app_col.addWidget(self.app_status_lbl)
+
+        self.app_notes_box = QPlainTextEdit()
+        self.app_notes_box.setReadOnly(True)
+        self.app_notes_box.setMaximumHeight(96)
+        self.app_notes_box.hide()
+        app_col.addWidget(self.app_notes_box)
+
+        app_btns = QHBoxLayout()
+        app_btns.setSpacing(8)
+        self.app_check_btn = QPushButton("Check for App Update")
+        self.app_check_btn.setObjectName("secondaryBtn")
+        self.app_check_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.app_check_btn.clicked.connect(self.check_app)
+
+        self.app_install_btn = QPushButton("Update & Install")
+        self.app_install_btn.setObjectName("primaryBtn")
+        self.app_install_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.app_install_btn.clicked.connect(self.install_app)
+        self.app_install_btn.hide()
+
+        self.app_release_btn = QPushButton("View Release")
+        self.app_release_btn.setObjectName("compactBtn")
+        self.app_release_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.app_release_btn.clicked.connect(self.open_release_page)
+        self.app_release_btn.hide()
+
+        app_btns.addWidget(self.app_check_btn)
+        app_btns.addWidget(self.app_install_btn)
+        app_btns.addStretch(1)
+        app_btns.addWidget(self.app_release_btn)
+        app_col.addLayout(app_btns)
+        layout.addWidget(app_card)
+
+        # Card 2: yt-dlp Extraction Engine
+        engine_card = QFrame()
+        engine_card.setObjectName("card")
+        eng_col = QVBoxLayout(engine_card)
+        eng_col.setContentsMargins(14, 12, 14, 12)
+        eng_col.setSpacing(8)
+
+        eng_top = QHBoxLayout()
+        eng_title = QLabel("yt-dlp Engine")
+        eng_title.setObjectName("sectionTitle")
+        self.eng_ver_lbl = QLabel(updater.current_version())
+        self.eng_ver_lbl.setObjectName("mutedText")
+        eng_top.addWidget(eng_title)
+        eng_top.addStretch(1)
+        eng_top.addWidget(self.eng_ver_lbl)
+        eng_col.addLayout(eng_top)
+
+        self.eng_status_lbl = plain_label(
+            f"Active: {updater.describe()}",
+            object_name="mutedText",
+        )
+        eng_col.addWidget(self.eng_status_lbl)
+
+        eng_btns = QHBoxLayout()
+        eng_btns.setSpacing(8)
+        self.eng_update_btn = QPushButton("Check & Update yt-dlp")
+        self.eng_update_btn.setObjectName("secondaryBtn")
+        self.eng_update_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.eng_update_btn.clicked.connect(self.run_ytdlp_check)
+        eng_btns.addWidget(self.eng_update_btn)
+        eng_btns.addStretch(1)
+        eng_col.addLayout(eng_btns)
+        layout.addWidget(engine_card)
+
+        # Bottom controls
+        footer = QHBoxLayout()
+        self.daily_check = QCheckBox("Check automatically once a day (App & yt-dlp)")
+        self.daily_check.setChecked(
+            updater.auto_check_enabled() and app_updater.auto_check_enabled()
+        )
+        self.daily_check.toggled.connect(self._on_daily_toggled)
+        footer.addWidget(self.daily_check, 1)
+
+        close_btn = QPushButton("Close")
+        close_btn.setObjectName("secondaryBtn")
+        close_btn.clicked.connect(self.accept)
+        footer.addWidget(close_btn)
+        layout.addLayout(footer)
+
+        if app_info is not None:
+            self._apply_app_info(app_info)
+
+    def _on_daily_toggled(self, checked):
+        updater.set_auto_check(checked)
+        app_updater.set_auto_check(checked)
+
+    def _apply_app_info(self, info):
+        self.app_info = info
+        if info.available:
+            if info.same_tag_hotfix:
+                self.app_status_lbl.setText(
+                    f"A refreshed build of Zardit {info.tag_name} is available (SHA-256 verified)."
+                )
+            else:
+                self.app_status_lbl.setText(
+                    f"Zardit {info.tag_name} is available (you have v{info.current_version})."
+                )
+            if info.release_notes:
+                self.app_notes_box.setPlainText(info.release_notes)
+                self.app_notes_box.show()
+            else:
+                self.app_notes_box.hide()
+
+            if info.asset:
+                if info.install_mode == "linux_appimage":
+                    self.app_install_btn.setText("Download AppImage")
+                elif info.install_mode == "source":
+                    self.app_install_btn.setText("Download Package")
+                else:
+                    self.app_install_btn.setText("Update & Install")
+                self.app_install_btn.show()
+            else:
+                self.app_install_btn.hide()
+            self.app_release_btn.show()
+        else:
+            self.app_status_lbl.setText(
+                f"Zardit v{info.current_version} is up to date."
+            )
+            self.app_notes_box.hide()
+            self.app_install_btn.hide()
+            self.app_release_btn.show()
+
+    def check_app(self):
+        self.app_check_btn.setEnabled(False)
+        self.app_check_btn.setText("Checking…")
+        if hasattr(self.main_window, "start_task"):
+            task = self.main_window.start_task(lambda _t: app_updater.check_for_app_update())
+            task.done.connect(self._on_app_checked)
+            task.failed.connect(self._on_app_check_failed)
+            task.start()
+        else:
+            try:
+                info = app_updater.check_for_app_update()
+                self._on_app_checked(info)
+            except Exception as err:
+                self._on_app_check_failed(str(err))
+
+    def _on_app_checked(self, info):
+        self.app_check_btn.setEnabled(True)
+        self.app_check_btn.setText("Check for App Update")
+        self._apply_app_info(info)
+        if hasattr(self.main_window, "sync_app_update_state"):
+            self.main_window.sync_app_update_state(info)
+
+    def _on_app_check_failed(self, msg):
+        self.app_check_btn.setEnabled(True)
+        self.app_check_btn.setText("Check for App Update")
+        self.app_status_lbl.setText(msg)
+
+    def install_app(self):
+        if not self.app_info:
+            return
+        self.accept()
+        if hasattr(self.main_window, "install_app_update_flow"):
+            self.main_window.install_app_update_flow(self.app_info)
+
+    def open_release_page(self):
+        url = self.app_info.release_url if self.app_info else app_updater.RELEASES_PAGE_URL
+        QDesktopServices.openUrl(QUrl(url))
+
+    def run_ytdlp_check(self):
+        self.accept()
+        if hasattr(self.main_window, "update_ytdlp"):
+            self.main_window.update_ytdlp()
 
 
 class InstagramAccessDialog(QDialog):
@@ -1143,6 +1387,8 @@ class MainWindow(QWidget):
         self._is_wide = False
         self._active_page = "downloader"
         self._history_filter = "all"
+        self._available_ytdlp_version = None
+        self._available_app_update = None
 
         self.theme_mode = get_saved_theme()
         self.active_theme = self.resolve_theme(self.theme_mode)
@@ -1160,6 +1406,7 @@ class MainWindow(QWidget):
 
         self.update_notice = UpdateNotice(self)
         self.update_notice.found.connect(self.on_update_available)
+        self.update_notice.app_found.connect(self.on_app_update_available)
         self.update_notice.start()
 
         self.preview_loader = PreviewNotice(self)
@@ -1332,15 +1579,14 @@ class MainWindow(QWidget):
         self.ig_button.clicked.connect(self.open_instagram_access)
         self.refresh_ig_button()
 
-        self.update_button = QPushButton("Update yt-dlp")
+        self.update_button = QPushButton("Updates")
         self.update_button.setObjectName("updateBtn")
         self.update_button.setProperty("updateAvailable", "false")
         self.update_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.update_button.setToolTip(
-            "Download the newest yt-dlp. This fixes most sudden "
-            "download failures."
+            "Check for Zardit app and yt-dlp engine updates"
         )
-        self.update_button.clicked.connect(self.update_ytdlp)
+        self.update_button.clicked.connect(self.open_updates_dialog)
 
         self.about_button = QPushButton("About")
         self.about_button.setObjectName("secondaryBtn")
@@ -1365,6 +1611,34 @@ class MainWindow(QWidget):
             self.header_controls_container, 0, Qt.AlignmentFlag.AlignVCenter
         )
         self.header_outer_layout.addLayout(self.header_layout)
+
+        # Non-intrusive app update banner (hidden until a new release or hotfix arrives)
+        self.app_update_banner = QFrame()
+        self.app_update_banner.setObjectName("statusBanner")
+        self.app_update_banner.setProperty("statusLevel", "info")
+        app_upd_row = QHBoxLayout(self.app_update_banner)
+        app_upd_row.setContentsMargins(14, 8, 14, 8)
+        app_upd_row.setSpacing(10)
+
+        self.app_update_banner_label = plain_label(object_name="statusText")
+        self.app_update_banner_label.setProperty("statusLevel", "info")
+
+        self.app_update_action_btn = QPushButton("Update")
+        self.app_update_action_btn.setObjectName("compactBtn")
+        self.app_update_action_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.app_update_action_btn.clicked.connect(self._on_banner_update_clicked)
+
+        self.app_update_dismiss_btn = QPushButton("Later")
+        self.app_update_dismiss_btn.setObjectName("compactBtn")
+        self.app_update_dismiss_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.app_update_dismiss_btn.clicked.connect(self.dismiss_app_update_banner)
+
+        app_upd_row.addWidget(self.app_update_banner_label, 1)
+        app_upd_row.addWidget(self.app_update_action_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+        app_upd_row.addWidget(self.app_update_dismiss_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.app_update_banner.hide()
+        self.header_outer_layout.addWidget(self.app_update_banner)
+
         root_layout.addWidget(self.header_widget)
 
         # Main stacked pages (Downloader + History)
@@ -3267,15 +3541,130 @@ class MainWindow(QWidget):
         clear_history(delete_files=delete_files)
         self.refresh_history()
 
-    # ----- yt-dlp updates -------------------------------------------------
+    # ----- yt-dlp & app updates -------------------------------------------
+
+    def refresh_update_badge(self):
+        count = (1 if self._available_ytdlp_version else 0) + (
+            1 if (self._available_app_update and self._available_app_update.available) else 0
+        )
+        if count > 0:
+            self.update_button.setText(f"Updates ({count})")
+            self.update_button.setProperty("updateAvailable", "true")
+            tips = []
+            if self._available_app_update and self._available_app_update.available:
+                tips.append(f"Zardit {self._available_app_update.tag_name}")
+            if self._available_ytdlp_version:
+                tips.append(f"yt-dlp {self._available_ytdlp_version}")
+            self.update_button.setToolTip("Updates available: " + " · ".join(tips))
+        else:
+            self.update_button.setText("Updates")
+            self.update_button.setProperty("updateAvailable", "false")
+            self.update_button.setToolTip("Check for Zardit app and yt-dlp engine updates")
+        repolish(self.update_button)
+
+    def _notify_app_update_os(self, info):
+        app = QApplication.instance()
+        if app is not None and app.platformName() == "offscreen":
+            return
+        title = (
+            f"{APP_NAME} {info.tag_name} update ready"
+            if info.same_tag_hotfix
+            else f"{APP_NAME} {info.tag_name} is available"
+        )
+        msg = "Click Updates inside Zardit to verify and install."
+        notify(title, msg)
+        if sys.platform == "win32" and QSystemTrayIcon.isSystemTrayAvailable():
+            try:
+                if not hasattr(self, "_update_tray"):
+                    self._update_tray = QSystemTrayIcon(load_app_icon(), self)
+                    self._update_tray.show()
+                self._update_tray.showMessage(title, msg, QSystemTrayIcon.MessageIcon.Information, 6000)
+            except Exception:
+                pass
+
+    def sync_app_update_state(self, info):
+        if info and info.available:
+            self._available_app_update = info
+            if info.same_tag_hotfix:
+                label = f"Updated build available for {APP_NAME} {info.tag_name} (SHA-256 verified)."
+            else:
+                label = f"{APP_NAME} {info.tag_name} is available (currently v{info.current_version})."
+            self.app_update_banner_label.setText(label)
+            self.app_update_action_btn.setText(
+                "Download" if info.install_mode in ("linux_appimage", "source") else "Update"
+            )
+            self.app_update_banner.show()
+        else:
+            self._available_app_update = None
+            self.app_update_banner.hide()
+        self.refresh_update_badge()
+
+    def on_app_update_available(self, info):
+        self.sync_app_update_state(info)
+        if info and info.available:
+            self._notify_app_update_os(info)
+
+    def _on_banner_update_clicked(self):
+        if self._available_app_update:
+            self.open_updates_dialog()
+
+    def dismiss_app_update_banner(self):
+        info = self._available_app_update
+        if info:
+            app_updater.dismiss_cached_update(
+                asset_sha256=info.asset.sha256 if info.asset else "",
+                latest_version=info.latest_version,
+            )
+        self.app_update_banner.hide()
+
+    def open_updates_dialog(self):
+        dlg = UpdatesDialog(self, app_info=self._available_app_update)
+        dlg.exec()
+
+    def install_app_update_flow(self, info):
+        if self.state in ("fetching", "downloading"):
+            self.show_status("Wait for the current download to finish before updating.", "warning")
+            return
+        progress = self.open_progress(f"Downloading {APP_NAME} {info.tag_name}…")
+        progress.setWindowTitle(f"Update {APP_NAME}")
+
+        def job(thread):
+            return app_updater.install_app_update(
+                info=info,
+                report=lambda text: thread.message.emit(text, "info"),
+            )
+
+        task = self.start_task(job)
+        task.message.connect(lambda text, _level: progress.setLabelText(text))
+        task.done.connect(lambda result: self._on_app_update_installed(progress, info, result))
+        task.failed.connect(lambda msg: self.on_update_failed(progress, msg))
+        task.start()
+
+    def _on_app_update_installed(self, progress, info, result):
+        progress.close()
+        action, path = result
+        self._available_app_update = None
+        self.app_update_banner.hide()
+        self.refresh_update_badge()
+
+        if action == "installer_launched":
+            self.show_status("✔ Verified installer launched. Completing upgrade…", "success")
+            self.close()
+        elif action == "portable_updating":
+            self.show_status("✔ Verified portable update staged. Restarting…", "success")
+            self.close()
+        else:
+            QMessageBox.information(
+                self,
+                f"{APP_NAME} Update Downloaded",
+                f"Verified package saved to:\n{path}\n\n"
+                f"Release: {info.tag_name}",
+            )
+            self.show_status(f"✔ Verified update saved: {path}", "success")
 
     def on_update_available(self, version):
-        self.update_button.setText(f"Update yt-dlp ({version})")
-        self.update_button.setProperty("updateAvailable", "true")
-        self.update_button.setToolTip(
-            f"A newer yt-dlp, version {version}, is available."
-        )
-        repolish(self.update_button)
+        self._available_ytdlp_version = version
+        self.refresh_update_badge()
 
     def open_progress(self, text):
         dialog = QProgressDialog(text, "", 0, 0, self)
@@ -3310,10 +3699,8 @@ class MainWindow(QWidget):
         progress.close()
 
         if not info.available:
-            self.update_button.setText("Update yt-dlp")
-            self.update_button.setProperty("updateAvailable", "false")
-            self.update_button.setToolTip("")
-            repolish(self.update_button)
+            self._available_ytdlp_version = None
+            self.refresh_update_badge()
 
         box = QMessageBox(self)
         box.setWindowTitle("Update yt-dlp")
@@ -3396,10 +3783,8 @@ class MainWindow(QWidget):
 
     def on_update_installed(self, progress, version):
         progress.close()
-        self.update_button.setText("Update yt-dlp")
-        self.update_button.setProperty("updateAvailable", "false")
-        self.update_button.setToolTip("")
-        repolish(self.update_button)
+        self._available_ytdlp_version = None
+        self.refresh_update_badge()
         self.show_status(
             f"✔ yt-dlp {version} is installed. Restart the app to use it.",
             "success",
@@ -3469,6 +3854,11 @@ class MainWindow(QWidget):
                 task.terminate()
                 task.wait(2000)
 
+        if hasattr(self, "_update_tray"):
+            try:
+                self._update_tray.hide()
+            except Exception:
+                pass
         event.accept()
 
 

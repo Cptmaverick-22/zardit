@@ -12,6 +12,8 @@ import io.github.cptmaverick_22.zardit.data.HistoryStore
 import io.github.cptmaverick_22.zardit.data.InstagramAuth
 import io.github.cptmaverick_22.zardit.data.ZarditPrefs
 import io.github.cptmaverick_22.zardit.downloader.AppTab
+import io.github.cptmaverick_22.zardit.downloader.AppUpdateInfo
+import io.github.cptmaverick_22.zardit.downloader.AppUpdater
 import io.github.cptmaverick_22.zardit.downloader.AudioOption
 import io.github.cptmaverick_22.zardit.downloader.DownloadMode
 import io.github.cptmaverick_22.zardit.downloader.DownloadState
@@ -50,6 +52,15 @@ data class MainUiState(
     val existingDownloadPath: String? = null,
     val isUpdatingYtDlp: Boolean = false,
     val updateBanner: String? = null,
+    val appUpdateInfo: AppUpdateInfo? = null,
+    val showAppUpdateBanner: Boolean = false,
+    val isCheckingAppUpdate: Boolean = false,
+    val appUpdateStatus: String? = null,
+    val isDownloadingApk: Boolean = false,
+    val apkDownloadPct: Int = 0,
+    val autoCheckUpdates: Boolean = true,
+    val pendingInstallApkPath: String? = null,
+    val needInstallPermissionPrompt: Boolean = false,
     val isInstagramConnected: Boolean = false,
     val history: List<HistoryItem> = emptyList(),
 )
@@ -69,6 +80,7 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
             themeMode = prefs.getThemeMode(),
             folderDisplayName = prefs.getFolderDisplayName(),
             hasCustomFolder = prefs.getTreeUri() != null,
+            autoCheckUpdates = prefs.isAppUpdateAutoCheckEnabled(),
             isInstagramConnected = InstagramAuth.hasSession(application),
             history = historyStore.loadAll(),
         ),
@@ -83,6 +95,7 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
                 }
             }
         }
+        checkAppUpdateInBackground()
     }
 
     fun onTabSelected(tab: AppTab) {
@@ -429,6 +442,150 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
                 .getOrElse { err -> "Update failed: ${err.message}" }
             _uiState.update { it.copy(isUpdatingYtDlp = false, updateBanner = msg) }
         }
+    }
+
+    private fun checkAppUpdateInBackground() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val info = AppUpdater.backgroundCheckIfDue(app) ?: return@launch
+            AppUpdater.notifyUpdateIfPermitted(app, info)
+            _uiState.update {
+                it.copy(
+                    appUpdateInfo = info,
+                    showAppUpdateBanner = true,
+                    appUpdateStatus = if (info.sameTagHotfix) {
+                        "Updated build for ${info.tagName} is available."
+                    } else {
+                        "${info.tagName} is available."
+                    },
+                )
+            }
+        }
+    }
+
+    fun checkAppUpdateNow() {
+        if (_uiState.value.isCheckingAppUpdate || _uiState.value.isDownloadingApk) return
+        _uiState.update { it.copy(isCheckingAppUpdate = true, appUpdateStatus = "Checking GitHub Releases…") }
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { AppUpdater.checkForUpdate(app) }
+                .onSuccess { info ->
+                    val status = when {
+                        info.available && info.sameTagHotfix ->
+                            "Refreshed build available for ${info.tagName} (SHA-256 verified)."
+                        info.available ->
+                            "Zardit ${info.tagName} is ready to install."
+                        else ->
+                            "Zardit v${info.currentVersion} is up to date."
+                    }
+                    _uiState.update {
+                        it.copy(
+                            isCheckingAppUpdate = false,
+                            appUpdateInfo = info,
+                            showAppUpdateBanner = info.available,
+                            appUpdateStatus = status,
+                        )
+                    }
+                }
+                .onFailure { err ->
+                    _uiState.update {
+                        it.copy(
+                            isCheckingAppUpdate = false,
+                            appUpdateStatus = err.message ?: "Could not check for app updates.",
+                        )
+                    }
+                }
+        }
+    }
+
+    fun downloadAndInstallAppUpdate() {
+        val info = _uiState.value.appUpdateInfo ?: return
+        val asset = info.asset ?: run {
+            _uiState.update { it.copy(appUpdateStatus = "No verified APK found in ${info.tagName}.") }
+            return
+        }
+        if (_uiState.value.isDownloadingApk) return
+        _uiState.update {
+            it.copy(
+                isDownloadingApk = true,
+                apkDownloadPct = 0,
+                appUpdateStatus = "Downloading & verifying ${asset.name}…",
+            )
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                AppUpdater.downloadAndVerifyApk(app, asset) { pct ->
+                    _uiState.update { it.copy(apkDownloadPct = pct) }
+                }
+            }.onSuccess { apkFile ->
+                _uiState.update {
+                    it.copy(
+                        isDownloadingApk = false,
+                        apkDownloadPct = 100,
+                        pendingInstallApkPath = apkFile.absolutePath,
+                        showAppUpdateBanner = false,
+                    )
+                }
+                if (AppUpdater.canInstallPackages(app)) {
+                    runCatching { AppUpdater.launchApkInstall(app, apkFile) }
+                        .onSuccess {
+                            _uiState.update {
+                                it.copy(
+                                    needInstallPermissionPrompt = false,
+                                    appUpdateStatus = "SHA-256 verified. Follow system prompt to finish updating.",
+                                )
+                            }
+                        }
+                        .onFailure { err ->
+                            _uiState.update {
+                                it.copy(appUpdateStatus = "Could not open installer: ${err.message}")
+                            }
+                        }
+                } else {
+                    _uiState.update {
+                        it.copy(
+                            needInstallPermissionPrompt = true,
+                            appUpdateStatus = "Verified! Allow 'Install unknown apps' to install ${info.tagName}.",
+                        )
+                    }
+                }
+            }.onFailure { err ->
+                _uiState.update {
+                    it.copy(
+                        isDownloadingApk = false,
+                        appUpdateStatus = err.message ?: "APK update failed.",
+                    )
+                }
+            }
+        }
+    }
+
+    fun retryPendingApkInstall() {
+        val path = _uiState.value.pendingInstallApkPath ?: return
+        val file = java.io.File(path)
+        if (!file.isFile) {
+            _uiState.update { it.copy(needInstallPermissionPrompt = false, pendingInstallApkPath = null) }
+            return
+        }
+        if (AppUpdater.canInstallPackages(app)) {
+            _uiState.update { it.copy(needInstallPermissionPrompt = false) }
+            runCatching { AppUpdater.launchApkInstall(app, file) }
+                .onFailure { err ->
+                    _uiState.update { it.copy(appUpdateStatus = "Could not open installer: ${err.message}") }
+                }
+        }
+    }
+
+    fun dismissInstallPermissionPrompt() {
+        _uiState.update { it.copy(needInstallPermissionPrompt = false) }
+    }
+
+    fun dismissAppUpdateBanner() {
+        _uiState.value.appUpdateInfo?.let { AppUpdater.dismissUpdate(app, it) }
+        _uiState.update { it.copy(showAppUpdateBanner = false) }
+    }
+
+    fun setAutoCheckUpdates(enabled: Boolean) {
+        prefs.setAppUpdateAutoCheckEnabled(enabled)
+        _uiState.update { it.copy(autoCheckUpdates = enabled) }
     }
 
     fun buildDiagnosticReport(): String = DiagnosticLog.buildReport(app)

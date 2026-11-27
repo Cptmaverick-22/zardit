@@ -6,19 +6,48 @@ plugins {
 android {
   namespace = "io.github.cptmaverick_22.zardit"
   compileSdk = 36
+  val releaseKeystoreFile = System.getenv("ANDROID_KEYSTORE_FILE")?.let { file(it) }?.takeIf { it.isFile }
+  val releaseKeystorePass = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+  val releaseKeyAlias = System.getenv("ANDROID_KEY_ALIAS")
+  val releaseKeyPass = System.getenv("ANDROID_KEY_PASSWORD")
+  val hasReleaseSigning = releaseKeystoreFile != null &&
+    !releaseKeystorePass.isNullOrBlank() &&
+    !releaseKeyAlias.isNullOrBlank() &&
+    !releaseKeyPass.isNullOrBlank()
+
+  val gitCommit = (System.getenv("ZARDIT_GIT_COMMIT") ?: "").take(40)
+  val buildTimeSec = System.getenv("ZARDIT_BUILD_TIME_SEC")?.toLongOrNull() ?: 0L
+
   defaultConfig {
     applicationId = "io.github.cptmaverick_22.zardit"
     minSdk = 24
     targetSdk = 36
-    versionCode = 6
-    versionName = "1.4"
+    versionCode = 7
+    versionName = "1.4.1"
+    buildConfigField("String", "GIT_COMMIT", "\"$gitCommit\"")
+    buildConfigField("long", "BUILD_TIME_SEC", "${buildTimeSec}L")
+  }
+
+  signingConfigs {
+    if (hasReleaseSigning) {
+      create("release") {
+        storeFile = releaseKeystoreFile
+        storePassword = releaseKeystorePass
+        keyAlias = releaseKeyAlias
+        keyPassword = releaseKeyPass
+      }
+    }
   }
 
   buildTypes {
     release {
       isMinifyEnabled = true
       isShrinkResources = false
-      signingConfig = signingConfigs.getByName("debug")
+      signingConfig = if (hasReleaseSigning) {
+        signingConfigs.getByName("release")
+      } else {
+        signingConfigs.getByName("debug")
+      }
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
     }
   }
@@ -37,7 +66,7 @@ android {
   buildFeatures {
     compose = true
     aidl = false
-    buildConfig = false
+    buildConfig = true
     shaders = false
   }
 

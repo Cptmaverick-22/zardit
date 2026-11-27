@@ -3,6 +3,7 @@ package io.github.cptmaverick_22.zardit.data
 import android.content.Context
 import android.os.Build
 import com.yausername.youtubedl_android.YoutubeDL
+import io.github.cptmaverick_22.zardit.BuildConfig
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -27,8 +28,15 @@ object DiagnosticLog {
         val engineVer = runCatching { YoutubeDL.getInstance().version(context) }.getOrNull() ?: "unknown"
         val igConnected = InstagramAuth.hasSession(context)
         val abis = Build.SUPPORTED_ABIS.joinToString(", ")
+        val shortCommit = BuildConfig.GIT_COMMIT.take(7).ifBlank { "" }
+        val appLine = if (shortCommit.isNotEmpty()) {
+            "App: v${BuildConfig.VERSION_NAME} ($shortCommit, code ${BuildConfig.VERSION_CODE})"
+        } else {
+            "App: v${BuildConfig.VERSION_NAME} (code ${BuildConfig.VERSION_CODE})"
+        }
         return buildString {
             appendLine("=== Zardit Android Diagnostics ===")
+            appendLine(appLine)
             appendLine("Device: ${Build.MANUFACTURER} ${Build.MODEL} (Android ${Build.VERSION.RELEASE}, SDK ${Build.VERSION.SDK_INT})")
             appendLine("ABIs: $abis")
             appendLine("Engine: $engineVer")

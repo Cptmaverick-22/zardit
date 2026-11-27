@@ -15,7 +15,7 @@ log = logging.getLogger("zardit")
 APP_NAME = "Zardit"
 APP_SLUG = "zardit"
 APP_TAGLINE = "Blaze through videos, audio & playlists across every platform."
-APP_VERSION = "1.4"   # The only place the version is set.
+APP_VERSION = "1.4.1"   # The only place the version is set.
 APP_LICENSE = "GPL-3.0-or-later"
 
 IG_BROWSERS = ("chrome", "firefox", "edge", "brave", "chromium", "opera", "vivaldi")
@@ -229,3 +229,22 @@ def save_download_dir(path):
     save_setting("download_dir", str(download_dir))
 
     return download_dir
+
+
+def get_build_info():
+    """Return embedded release build metadata (commit, built_at epoch) if available."""
+
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    info_path = base / "build_info.json"
+    info = {"version": APP_VERSION, "commit": "", "built_at": 0}
+    try:
+        if info_path.is_file():
+            raw = json.loads(info_path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                info["commit"] = str(raw.get("commit") or "").strip()
+                built = raw.get("built_at")
+                if isinstance(built, (int, float)):
+                    info["built_at"] = int(built)
+    except (OSError, ValueError):
+        pass
+    return info

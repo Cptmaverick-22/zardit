@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -26,6 +27,7 @@ import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -44,6 +46,7 @@ import androidx.compose.material.icons.rounded.LightMode
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Share
+import androidx.compose.material.icons.rounded.SystemUpdate
 import androidx.compose.material.icons.rounded.VideoLibrary
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -61,6 +64,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -82,6 +86,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import coil.compose.AsyncImage
+import io.github.cptmaverick_22.zardit.BuildConfig
 import io.github.cptmaverick_22.zardit.data.HistoryItem
 import io.github.cptmaverick_22.zardit.downloader.AppTab
 import io.github.cptmaverick_22.zardit.downloader.DownloadMode
@@ -102,8 +107,15 @@ fun MainScreen(
     val context = LocalContext.current
     var showIgLogin by remember { mutableStateOf(false) }
     var showIgDisconnect by remember { mutableStateOf(false) }
+    var showUpdatesSheet by remember { mutableStateOf(false) }
     var pendingDeleteItem by remember { mutableStateOf<HistoryItem?>(null) }
     var showClearAllConfirm by remember { mutableStateOf(false) }
+
+    val installPermLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult(),
+    ) {
+        viewModel.retryPendingApkInstall()
+    }
 
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
@@ -222,24 +234,33 @@ fun MainScreen(
                 }
             }
 
+            val hasAppUpdate = ui.appUpdateInfo?.available == true
             OutlinedButton(
-                onClick = { viewModel.updateYtDlp() },
-                enabled = !ui.isUpdatingYtDlp,
+                onClick = { showUpdatesSheet = true },
                 shape = RoundedCornerShape(10.dp),
                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
             ) {
-                if (ui.isUpdatingYtDlp) {
+                if (ui.isUpdatingYtDlp || ui.isCheckingAppUpdate || ui.isDownloadingApk) {
                     CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
                 } else {
-                    Icon(Icons.Rounded.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Icon(Icons.Rounded.SystemUpdate, contentDescription = null, modifier = Modifier.size(16.dp))
                 }
                 Spacer(Modifier.width(5.dp))
                 Text(
-                    text = "Engine",
+                    text = "Updates",
                     style = MaterialTheme.typography.labelMedium,
                     maxLines = 1,
                     softWrap = false,
                 )
+                if (hasAppUpdate) {
+                    Spacer(Modifier.width(5.dp))
+                    Box(
+                        modifier = Modifier
+                            .size(7.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primary),
+                    )
+                }
             }
         }
 
@@ -289,6 +310,45 @@ fun MainScreen(
                                 maxLines = 1,
                             )
                         }
+                    }
+                }
+            }
+        }
+
+        if (ui.showAppUpdateBanner && ui.appUpdateInfo?.available == true) {
+            val info = ui.appUpdateInfo!!
+            Surface(
+                color = MaterialTheme.colorScheme.primaryContainer,
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Icon(
+                        Icons.Rounded.SystemUpdate,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Text(
+                        text = if (info.sameTagHotfix) {
+                            "Updated build ready for Zardit ${info.tagName}"
+                        } else {
+                            "Zardit ${info.tagName} is available"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = { showUpdatesSheet = true }) {
+                        Text("Update")
+                    }
+                    TextButton(onClick = { viewModel.dismissAppUpdateBanner() }) {
+                        Text("Later")
                     }
                 }
             }
@@ -1050,6 +1110,196 @@ fun MainScreen(
                             Text("History only")
                         }
                     }
+                }
+            },
+        )
+    }
+
+    if (showUpdatesSheet) {
+        val appInfo = ui.appUpdateInfo
+        val shortSha = BuildConfig.GIT_COMMIT.take(7)
+        val appVerLine = if (shortSha.isNotEmpty()) {
+            "v${BuildConfig.VERSION_NAME} ($shortSha)"
+        } else {
+            "v${BuildConfig.VERSION_NAME}"
+        }
+        AlertDialog(
+            onDismissRequest = { if (!ui.isDownloadingApk) showUpdatesSheet = false },
+            title = { Text("Zardit Updates") },
+            text = {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    text = "Zardit App",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold,
+                                )
+                                Text(
+                                    text = appVerLine,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Text(
+                                text = ui.appUpdateStatus ?: "Check GitHub Releases for app updates (SHA-256 verified).",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            if (appInfo?.available == true && appInfo.releaseNotes.isNotEmpty()) {
+                                Text(
+                                    text = appInfo.releaseNotes,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    maxLines = 5,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            if (ui.isDownloadingApk) {
+                                LinearProgressIndicator(
+                                    progress = { ui.apkDownloadPct / 100f },
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                            }
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                OutlinedButton(
+                                    onClick = { viewModel.checkAppUpdateNow() },
+                                    enabled = !ui.isCheckingAppUpdate && !ui.isDownloadingApk,
+                                    modifier = Modifier.weight(1f),
+                                ) {
+                                    Text(if (ui.isCheckingAppUpdate) "Checking…" else "Check App")
+                                }
+                                if (appInfo?.available == true && appInfo.asset != null) {
+                                    Button(
+                                        onClick = { viewModel.downloadAndInstallAppUpdate() },
+                                        enabled = !ui.isDownloadingApk,
+                                        modifier = Modifier.weight(1f),
+                                    ) {
+                                        Text(if (ui.isDownloadingApk) "${ui.apkDownloadPct}%" else "Install")
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Text(
+                                text = "yt-dlp Extraction Engine",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                            )
+                            Text(
+                                text = "Keeps platform extractors working when sites change.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            OutlinedButton(
+                                onClick = {
+                                    showUpdatesSheet = false
+                                    viewModel.updateYtDlp()
+                                },
+                                enabled = !ui.isUpdatingYtDlp,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Icon(Icons.Rounded.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text(if (ui.isUpdatingYtDlp) "Updating Engine…" else "Update yt-dlp Engine")
+                            }
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text(
+                            text = "Notify daily on new app updates",
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Switch(
+                            checked = ui.autoCheckUpdates,
+                            onCheckedChange = { viewModel.setAutoCheckUpdates(it) },
+                        )
+                    }
+
+                    TextButton(
+                        onClick = {
+                            @Suppress("DEPRECATION")
+                            clipboard.setText(AnnotatedString(viewModel.buildDiagnosticReport()))
+                            showUpdatesSheet = false
+                            viewModel.showDiagnosticsCopiedBanner()
+                        },
+                    ) {
+                        Text("Copy Diagnostics Report")
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = { showUpdatesSheet = false },
+                    enabled = !ui.isDownloadingApk,
+                ) {
+                    Text("Close")
+                }
+            },
+        )
+    }
+
+    if (ui.needInstallPermissionPrompt && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissInstallPermissionPrompt() },
+            title = { Text("Allow App Installs") },
+            text = {
+                Text(
+                    "The update APK passed SHA-256 verification. Allow Zardit to install packages in Android settings so the update can launch automatically when you return.",
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.dismissInstallPermissionPrompt()
+                        val intent = Intent(
+                            Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                            Uri.parse("package:${context.packageName}"),
+                        )
+                        installPermLauncher.launch(intent)
+                    },
+                ) {
+                    Text("Open Settings")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.dismissInstallPermissionPrompt() }) {
+                    Text("Later")
                 }
             },
         )

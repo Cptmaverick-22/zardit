@@ -29,8 +29,19 @@ New-Item -ItemType Directory -Force -Path $CacheDir, $DistRoot | Out-Null
 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue (Join-Path $RootDir "build\zardit"), $DistApp
 Remove-Item -Force -ErrorAction SilentlyContinue $PortableZip, $InstallerExe
 
+$GitCommit = $env:GITHUB_SHA
+if (-not $GitCommit) {
+    $GitCommit = (git rev-parse HEAD 2>$null | Out-String).Trim()
+}
+$BuildInfoPath = Join-Path $RootDir "build_info.json"
+& $PythonBin -c "import json, sys, time; open(sys.argv[1], 'w', encoding='utf-8').write(json.dumps({'version': sys.argv[2], 'commit': sys.argv[3], 'built_at': int(time.time())}))" $BuildInfoPath $Version $GitCommit
+
+try {
 Write-Host "==> Building Windows PyInstaller bundle for Zardit v$Version..."
 & $PythonBin -m PyInstaller --noconfirm --clean (Join-Path $RootDir "packaging\windows\zardit.spec")
+} finally {
+    Remove-Item -Force -ErrorAction SilentlyContinue $BuildInfoPath
+}
 if ($LASTEXITCODE -ne 0) {
     throw "PyInstaller build failed."
 }

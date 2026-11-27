@@ -11,6 +11,8 @@ import updater
 updater.activate()   # Must run before anything imports yt-dlp.
 
 from updater import UpdateError
+from zardit_core import app_updater
+from zardit_core.app_updater import AppUpdateError
 
 from rich import box
 from rich.console import Console
@@ -406,24 +408,33 @@ def get_url():
     return raw
 
 
-update_notice = {"version": None}
+update_notice = {"version": None, "app": None}
 
 
 def start_update_check():
-    """Look for a newer yt-dlp in the background (a request at most once a day)."""
+    """Look for newer yt-dlp and Zardit app builds in the background (once daily)."""
 
     def work():
         update_notice["version"] = updater.background_check()
+        update_notice["app"] = app_updater.background_check_app_update()
 
     threading.Thread(target=work, daemon=True).start()
 
 
 def show_menu_notice():
-    if update_notice["version"]:
+    notices = []
+    app_info = update_notice.get("app")
+    if app_info and app_info.available:
+        kind = "Updated build for " if app_info.same_tag_hotfix else ""
+        notices.append(f"{kind}Zardit [accent.bold]{escape(app_info.tag_name)}[/] is available.")
+    if update_notice.get("version"):
+        notices.append(f"yt-dlp [accent.bold]{escape(update_notice['version'])}[/] is available.")
+
+    if notices:
+        notices.append("Choose [accent.bold]5[/] to update.")
         print_block(
             status_panel(
-                f"yt-dlp [accent.bold]{escape(update_notice['version'])}[/] "
-                "is available. Choose [accent.bold]5[/] to update.",
+                " ".join(notices),
                 "Update Available",
                 border_style="warning",
                 icon="[warning]↑[/]",
@@ -434,11 +445,129 @@ def show_menu_notice():
 
 
 def offer_daily_check_setting():
-    enabled = updater.auto_check_enabled()
+    enabled = updater.auto_check_enabled() and app_updater.auto_check_enabled()
     state, other = ("on", "off") if enabled else ("off", "on")
 
     if confirm(f"The daily update check is {state}. Turn it {other}?"):
         updater.set_auto_check(not enabled)
+        app_updater.set_auto_check(not enabled)
+
+
+def update_zardit_app():
+    """Check for a newer Zardit app release (or refreshed same-tag build)."""
+
+    print_section(f"Update {APP_NAME}")
+
+    try:
+        with console.status(f"  [accent]Checking GitHub for {APP_NAME} updates…[/]"):
+            info = app_updater.check_for_app_update()
+    except AppUpdateError as error:
+        show_error(error)
+        return
+
+    update_notice["app"] = info if info.available else None
+
+    details = Table.grid(padding=(0, 2))
+    details.add_column(style="muted")
+    details.add_column(style="accent.bold")
+    details.add_row("Current", f"v{escape(info.current_version)}")
+    details.add_row("Latest Release", escape(info.tag_name))
+    if info.available and info.same_tag_hotfix:
+        details.add_row("Build", "Refreshed build available (SHA-256 verified)")
+
+    print_block(
+        Panel(
+            details,
+            title=f"[heading]{APP_NAME} Version[/]",
+            title_align="left",
+            border_style="card.border",
+            box=box.ROUNDED,
+            width=ui_width(),
+            padding=(1, 2),
+        ),
+        top=1,
+    )
+
+    if not info.available:
+        print_block(
+            status_panel(
+                f"{APP_NAME} v{escape(info.current_version)} is up to date.",
+                "Up to Date",
+                border_style="success",
+                icon="[success]✔[/]",
+            ),
+            top=1,
+        )
+        return
+
+    if info.release_notes:
+        print_line(f"  [muted]{escape(info.release_notes.splitlines()[0])}[/]")
+
+    if not info.asset:
+        print_line(f"  [muted]Download from: {escape(info.release_url)}[/]")
+        return
+
+    if not confirm(f"Download and verify {info.asset.name}?"):
+        return
+
+    try:
+        with console.status(f"  [accent]Downloading {escape(info.asset.name)}…[/]") as status:
+            action, target_path = app_updater.install_app_update(
+                info=info, report=status.update
+            )
+    except AppUpdateError as error:
+        show_error(error)
+        return
+
+    update_notice["app"] = None
+    if action == "installer_launched":
+        print_block(
+            status_panel(
+                "Verified installer launched. Closing terminal to finish setup…",
+                "Installer Running",
+                border_style="success",
+                icon="[success]✔[/]",
+            ),
+            top=1,
+        )
+    elif action == "portable_updating":
+        print_block(
+            status_panel(
+                "Verified portable update staged and applying…",
+                "Updating",
+                border_style="success",
+                icon="[success]✔[/]",
+            ),
+            top=1,
+        )
+    else:
+        print_block(
+            status_panel(
+                f"Verified update saved to [heading]{escape(str(target_path))}[/]",
+                "Downloaded",
+                border_style="success",
+                icon="[success]✔[/]",
+            ),
+            top=1,
+        )
+
+
+def manage_updates():
+    """Minimal unified menu for Zardit App updates and yt-dlp updates."""
+
+    print_section("Updates")
+    print_line("  [accent.bold][1][/]  Check / Update Zardit App")
+    print_line("  [accent.bold][2][/]  Check / Update yt-dlp Engine")
+    print_line("  [accent.bold][3][/]  Toggle daily auto-check")
+    print_line("  [accent.bold][Q][/]  Back")
+
+    sub = prompt_line("Select update action", default="1").strip().lower()
+    if sub == "1":
+        update_zardit_app()
+    elif sub == "2":
+        update_ytdlp()
+    elif sub == "3":
+        offer_daily_check_setting()
 
 
 def update_ytdlp():
@@ -641,7 +770,7 @@ def show_menu():
         ("3", "Download Playlist", "Batch select & range"),
         ("I", "Download Image", "Photo, gallery, or thumbnail"),
         ("4", "Download Location", "Change output folder"),
-        ("5", "Update yt-dlp", "Check or install updates"),
+        ("5", "Updates", "Zardit app & yt-dlp engine"),
         ("H", "Download History", history_desc),
         ("G", "Instagram Access", "Private IG cookies or source"),
         ("T", "Switch Theme", f"Current: {theme_summary()}"),
@@ -1462,7 +1591,7 @@ def main():
             change_download_location()
 
         elif choice == "5":
-            update_ytdlp()
+            manage_updates()
 
         elif choice == "h":
             show_history()

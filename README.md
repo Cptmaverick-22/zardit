@@ -101,7 +101,7 @@ chmod +x Zardit-*-x86_64.AppImage
 - Print diagnostics: `./Zardit-*-x86_64.AppImage --diagnostics`
 - Register desktop app-menu icon & `zardit` / `zardit-cli` commands locally:
   ```bash
-  ./packaging/linux/install_local.sh ~/Applications/Zardit-1.4-x86_64.AppImage
+  ./packaging/linux/install_local.sh ~/Applications/Zardit-1.4.1-x86_64.AppImage
   ```
   *(Run `./packaging/linux/install_local.sh` without arguments to create desktop/CLI launchers backed by your local `.venv`.)*
 
@@ -217,7 +217,7 @@ python zardit_app.py
 Start it with `zardit-cli`, `./Zardit-*-x86_64.AppImage --cli`, or `python main.py`:
 
 ```text
-  ╭─ ▶ Zardit v1.4 ────────────────────────────────────────────────────────────╮
+  ╭─ ▶ Zardit v1.4.1 ──────────────────────────────────────────────────────────╮
   │                                                                            │
   │  Tagline  Blaze through videos, audio & playlists across every platform.   │
   │  Save to  ~/Downloads/Zardit                                               │

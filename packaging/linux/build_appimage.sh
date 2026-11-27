@@ -34,6 +34,22 @@ OUT_APPIMAGE="$ROOT_DIR/dist/Zardit-${VERSION}-${ARCH}.AppImage"
 mkdir -p "$CACHE_DIR" "$ROOT_DIR/dist"
 rm -rf "$APPDIR" "$ROOT_DIR/build/zardit" "$ROOT_DIR/dist/zardit"
 
+cleanup_build_info() {
+    rm -f "$ROOT_DIR/build_info.json"
+}
+trap cleanup_build_info EXIT
+
+GIT_COMMIT="${GITHUB_SHA:-$(git rev-parse HEAD 2>/dev/null || true)}"
+"$PYTHON_BIN" -c "
+import json, sys, time
+from pathlib import Path
+Path('build_info.json').write_text(json.dumps({
+    'version': sys.argv[1],
+    'commit': sys.argv[2],
+    'built_at': int(time.time()),
+}), encoding='utf-8')
+" "$VERSION" "$GIT_COMMIT"
+
 echo "==> Building PyInstaller bundle for Zardit v${VERSION}..."
 "$PYTHON_BIN" -m PyInstaller --noconfirm --clean "$ROOT_DIR/packaging/linux/zardit.spec"
 

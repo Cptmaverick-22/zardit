@@ -6,16 +6,20 @@ from pathlib import Path
 ROOT = Path(SPECPATH).resolve().parent.parent
 ICON_PATH = str(ROOT / "assets" / "zardit.ico")
 
+_DATAS = [
+    (ICON_PATH, "assets"),
+    (str(ROOT / "assets" / "zardit.png"), "assets"),
+    (str(ROOT / "assets" / "zardit.svg"), "assets"),
+    (str(ROOT / "LICENSE"), "."),
+]
+if (ROOT / "build_info.json").is_file():
+    _DATAS.append((str(ROOT / "build_info.json"), "."))
+
 a = Analysis(
     [str(ROOT / "zardit_app.py")],
     pathex=[str(ROOT)],
     binaries=[],
-    datas=[
-        (ICON_PATH, "assets"),
-        (str(ROOT / "assets" / "zardit.png"), "assets"),
-        (str(ROOT / "assets" / "zardit.svg"), "assets"),
-        (str(ROOT / "LICENSE"), "."),
-    ],
+    datas=_DATAS,
     hiddenimports=[
         "gui",
         "main",
@@ -23,6 +27,7 @@ a = Analysis(
         "desktop",
         "downloader",
         "zardit_core",
+        "zardit_core.app_updater",
         "zardit_core.errors",
         "zardit_core.formats",
         "zardit_core.instagram",

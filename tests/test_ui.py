@@ -16,6 +16,7 @@ from PySide6.QtWidgets import QApplication, QBoxLayout
 from rich.console import Console
 from rich.theme import Theme
 
+from zardit_core import app_updater
 import config
 import downloader
 import gui
@@ -1078,6 +1079,50 @@ class LauncherAndPackagingTests(unittest.TestCase):
         with mock.patch.object(main, "console", test_console):
             main.show_menu()
         self.assertIn("GPL-3.0-or-later", buffer.getvalue())
+
+    def test_app_update_banner_and_updates_dialog(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch.object(config, "CONFIG_DIR", root / "config"), \
+                    mock.patch.object(config, "SETTINGS_FILE", root / "config" / "settings.json"), \
+                    mock.patch.object(config, "default_download_dir", lambda: root / "downloads"), \
+                    mock.patch.object(gui.UpdateNotice, "start", lambda _self: None):
+                win = gui.MainWindow()
+                self.addCleanup(win.close)
+
+                self.assertEqual(win.update_button.text(), "Updates")
+                self.assertFalse(win.app_update_banner.isVisible())
+
+                info = app_updater.AppUpdateInfo(
+                    current_version=config.APP_VERSION,
+                    latest_version="1.5",
+                    tag_name="v1.5",
+                    available=True,
+                    same_tag_hotfix=False,
+                    release_url=app_updater.RELEASES_PAGE_URL,
+                    release_notes="Better updater",
+                    asset=app_updater.ReleaseAsset(
+                        "Zardit-1.5-win64-setup.exe",
+                        "https://github.com/Cptmaverick-22/zardit/releases/download/v1.5/Zardit-1.5-win64-setup.exe",
+                        "a" * 64,
+                        1024,
+                        0,
+                    ),
+                    install_mode="windows_installer",
+                )
+                win.on_app_update_available(info)
+                self.assertFalse(win.app_update_banner.isHidden())
+                self.assertEqual(win.update_button.text(), "Updates (1)")
+
+                win.on_update_available("2099.01.01")
+                self.assertEqual(win.update_button.text(), "Updates (2)")
+
+                dlg = gui.UpdatesDialog(win, app_info=info)
+                self.addCleanup(dlg.close)
+                self.assertIn("v1.5", dlg.app_status_lbl.text())
+
+                win.dismiss_app_update_banner()
+                self.assertTrue(win.app_update_banner.isHidden())
 
     def test_configure_bundled_tools_path_for_frozen_builds(self):
         with tempfile.TemporaryDirectory() as tmp:

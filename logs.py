@@ -13,7 +13,7 @@ from pathlib import Path
 from yt_dlp.version import __version__ as YTDLP_VERSION
 
 import updater
-from config import APP_NAME, APP_VERSION, CONFIG_DIR, get_download_dir
+from config import APP_NAME, APP_VERSION, CONFIG_DIR, get_build_info, get_download_dir
 
 LOG_FILE = CONFIG_DIR / "zardit.log"
 LOG_NAME = "zardit"
@@ -176,8 +176,12 @@ def diagnostics_text(max_log_lines=80):
     except OSError:
         folder = "unknown"
 
+    build = get_build_info()
+    commit = build.get("commit") or ""
+    commit_suffix = f" ({commit[:7]})" if commit else ""
+
     lines = [
-        f"{APP_NAME} {APP_VERSION}",
+        f"{APP_NAME} {APP_VERSION}{commit_suffix}",
         f"Python {platform.python_version()} on {platform.system()} "
         f"{platform.release()} ({platform.machine()})",
         f"yt-dlp {YTDLP_VERSION}",

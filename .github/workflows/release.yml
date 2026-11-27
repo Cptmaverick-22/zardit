@@ -130,7 +130,18 @@ jobs:
 
       - name: Run unit tests and build Android APK
         working-directory: android
-        run: ./gradlew testDebugUnitTest assembleRelease --no-daemon
+        env:
+          ZARDIT_GIT_COMMIT: ${{ github.sha }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          export ZARDIT_BUILD_TIME_SEC="$(date -u +%s)"
+          if [ -n "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" ]; then
+            echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > "$RUNNER_TEMP/zardit-release.jks"
+            export ANDROID_KEYSTORE_FILE="$RUNNER_TEMP/zardit-release.jks"
+          fi
+          ./gradlew testDebugUnitTest assembleRelease --no-daemon
 
       - name: Package Android APK
         run: |
