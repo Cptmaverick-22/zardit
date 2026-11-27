@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "*.py"
+      - "zardit_core/**"
       - "requirements*.txt"
       - "assets/**"
       - "packaging/linux/**"
@@ -15,6 +16,7 @@ on:
     branches: [main]
     paths:
       - "*.py"
+      - "zardit_core/**"
       - "requirements*.txt"
       - "assets/**"
       - "packaging/linux/**"
@@ -51,12 +53,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyflakes
 
-      - name: Lint runtime modules and updated tests
+      - name: Lint runtime modules and all tests
         run: |
           python -m pyflakes \
             config.py desktop.py downloader.py gui.py history.py \
             logs.py main.py theme.py updater.py zardit_app.py \
-            tests/test_names.py tests/test_ui.py
+            zardit_core/*.py tests/*.py
 
       - name: Validate desktop entry
         run: desktop-file-validate packaging/linux/zardit.desktop

@@ -30,9 +30,9 @@ jobs:
       - name: Setup Gradle cache
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build slim arm64-v8a APK
+      - name: Run unit tests & build slim arm64-v8a APK
         working-directory: android
-        run: ./gradlew assembleRelease --no-daemon
+        run: ./gradlew testDebugUnitTest assembleRelease --no-daemon
 
       - name: Upload Android APK artifact
         uses: actions/upload-artifact@v6

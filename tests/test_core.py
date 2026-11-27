@@ -16,7 +16,6 @@ from downloader import (
     detect_platform,
     format_duration,
     format_file_size,
-    friendly_error,
     has_playlist_and_video,
     is_mix_list,
     is_video_entry,
@@ -159,7 +158,22 @@ class LinkTests(unittest.TestCase):
                 self.assertTrue(validate_url(url))
                 self.assertEqual(detect_platform(url), platform)
 
-        for bad in ("", "not a link", "ftp://instagram.com/p/1", "https://localhost/video"):
+        for bad in (
+            "",
+            "not a link",
+            "ftp://instagram.com/p/1",
+            "https://localhost/video",
+            "https://localhost.localdomain/test",
+            "http://127.0.0.1/",
+            "http://192.168.1.1/",
+            "http://10.0.0.1/media",
+            "http://169.254.169.254/latest/meta-data",
+            "http://100.64.0.1/status",
+            "http://[::1]/",
+            "http://[fe80::1]/",
+            "http://example.com@127.0.0.1/",
+            "http://printer.local/clip.mp4",
+        ):
             with self.subTest(bad=bad):
                 self.assertFalse(validate_url(bad))
 

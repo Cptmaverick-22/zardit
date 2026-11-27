@@ -20,9 +20,17 @@ LOG_NAME = "zardit"
 
 # Share links carry tracking parameters (si=, utm_..., and so on) that
 # identify who shared them. They are removed before anything is written.
-_TRACKING = r"(?:si|pp|feature|utm_[A-Za-z0-9_]+)"
+_TRACKING = r"(?:si|pp|feature|utm_[A-Za-z0-9_]+|igsh|ig_rid|xmt|slof)"
 _FIRST_PARAM = re.compile(rf"\?{_TRACKING}=[^&\s\"'<>]*&")
 _OTHER_PARAM = re.compile(rf"[?&]{_TRACKING}=[^&\s\"'<>]*")
+_COOKIE_KV_RE = re.compile(
+    r"\b(sessionid|csrftoken|ds_user_id)=([^\s;\"'&<>]+)",
+    re.IGNORECASE,
+)
+_AUTH_HEADER_RE = re.compile(
+    r"\b(Cookie|Set-Cookie|Authorization)\s*:\s*([^\r\n]+)",
+    re.IGNORECASE,
+)
 
 
 def strip_tracking(text):
@@ -37,6 +45,15 @@ def strip_tracking(text):
     return _OTHER_PARAM.sub("", text)
 
 
+def redact_sensitive(text):
+    """Strip tracking parameters as well as session cookies and auth headers."""
+
+    cleaned = strip_tracking(text or "")
+    cleaned = _COOKIE_KV_RE.sub(r"\1=<redacted>", cleaned)
+    cleaned = _AUTH_HEADER_RE.sub(r"\1: <redacted>", cleaned)
+    return cleaned
+
+
 class _PrivacyFilter(logging.Filter):
     def filter(self, record):
         try:
@@ -44,7 +61,7 @@ class _PrivacyFilter(logging.Filter):
         except Exception:
             return True
 
-        cleaned = strip_tracking(message)
+        cleaned = redact_sensitive(message)
 
         if cleaned != message:
             record.msg, record.args = cleaned, ()
@@ -174,4 +191,4 @@ def diagnostics_text(max_log_lines=80):
         _log_tail(max_log_lines),
     ]
 
-    return "\n".join(lines).replace(str(Path.home()), "~")
+    return redact_sensitive("\n".join(lines)).replace(str(Path.home()), "~")

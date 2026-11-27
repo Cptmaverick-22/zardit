@@ -15,7 +15,7 @@ log = logging.getLogger("zardit")
 APP_NAME = "Zardit"
 APP_SLUG = "zardit"
 APP_TAGLINE = "Blaze through videos, audio & playlists across every platform."
-APP_VERSION = "1.3.1"   # The only place the version is set.
+APP_VERSION = "1.4"   # The only place the version is set.
 APP_LICENSE = "GPL-3.0-or-later"
 
 IG_BROWSERS = ("chrome", "firefox", "edge", "brave", "chromium", "opera", "vivaldi")

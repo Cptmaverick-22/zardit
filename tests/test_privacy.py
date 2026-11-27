@@ -1,11 +1,14 @@
 import logging
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from logs import _PrivacyFilter, strip_tracking
+import logs
+from logs import _PrivacyFilter, diagnostics_text, redact_sensitive, strip_tracking
 
 
 class StripTrackingTests(unittest.TestCase):
@@ -71,6 +74,38 @@ class FilterTests(unittest.TestCase):
         formatted = self.record("%s at %d%%", "https://youtu.be/abc?si=X", 50)
         _PrivacyFilter().filter(formatted)
         self.assertEqual(formatted.getMessage(), "https://youtu.be/abc at 50%")
+
+    def test_redacts_session_cookies_auth_headers_and_ig_tokens(self):
+        raw = (
+            "GET https://www.instagram.com/p/abc/?igsh=SECRET123&xmt=X9 "
+            "Cookie: sessionid=supersecret; csrftoken=csrf123; ds_user_id=42\n"
+            "Authorization: Bearer tok_999"
+        )
+        cleaned = redact_sensitive(raw)
+        self.assertNotIn("SECRET123", cleaned)
+        self.assertNotIn("supersecret", cleaned)
+        self.assertNotIn("csrf123", cleaned)
+        self.assertNotIn("tok_999", cleaned)
+        self.assertIn("<redacted>", cleaned)
+
+        rec = self.record("sessionid=my_secret_cookie https://instagram.com/p/x/?ig_rid=trace1")
+        _PrivacyFilter().filter(rec)
+        msg = rec.getMessage()
+        self.assertNotIn("my_secret_cookie", msg)
+        self.assertNotIn("trace1", msg)
+
+    def test_diagnostics_text_redacts_cookies_and_home_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_log = Path(tmp) / "zardit.log"
+            fake_log.write_text(
+                f"{Path.home()}/Downloads cookie sessionid=leak123 csrftoken=leak456\n",
+                encoding="utf-8",
+            )
+            with mock.patch.object(logs, "LOG_FILE", fake_log):
+                report = diagnostics_text(10)
+            self.assertNotIn("leak123", report)
+            self.assertNotIn("leak456", report)
+            self.assertNotIn(str(Path.home()), report)
 
 
 if __name__ == "__main__":

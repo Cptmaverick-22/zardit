@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "*.py"
+      - "zardit_core/**"
       - "requirements*.txt"
       - "assets/**"
       - "packaging/windows/**"
@@ -15,6 +16,7 @@ on:
     branches: [main]
     paths:
       - "*.py"
+      - "zardit_core/**"
       - "requirements*.txt"
       - "assets/**"
       - "packaging/windows/**"
@@ -40,8 +42,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyflakes
 
-      - name: Lint runtime modules and updated tests
-        run: python -m pyflakes config.py desktop.py downloader.py gui.py history.py logs.py main.py theme.py updater.py zardit_app.py tests/test_names.py tests/test_ui.py
+      - name: Lint runtime modules and all tests
+        run: python -m pyflakes config.py desktop.py downloader.py gui.py history.py logs.py main.py theme.py updater.py zardit_app.py zardit_core tests
 
       - name: Run unit tests
         env:

@@ -8,8 +8,12 @@ except ImportError:          # pip install pyflakes
     checker = messages = None
 
 ROOT = Path(__file__).resolve().parent.parent
-FILES = ["main.py", "gui.py", "downloader.py", "updater.py", "logs.py",
-         "config.py", "desktop.py", "theme.py", "history.py", "zardit_app.py"]
+FILES = [
+    "main.py", "gui.py", "downloader.py", "updater.py", "logs.py",
+    "config.py", "desktop.py", "theme.py", "history.py", "zardit_app.py",
+    "zardit_core/__init__.py", "zardit_core/errors.py", "zardit_core/formats.py",
+    "zardit_core/instagram.py", "zardit_core/naming.py", "zardit_core/urls.py",
+]
 
 
 @unittest.skipIf(checker is None, "pyflakes is not installed")

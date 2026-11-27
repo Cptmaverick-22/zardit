@@ -8,7 +8,6 @@ to cancel a download.
 from __future__ import annotations
 
 import copy
-import errno
 import hashlib
 import html
 import json
@@ -19,15 +18,12 @@ import subprocess
 import sys
 import threading
 import time
-import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 import urllib.request
-import xml.etree.ElementTree as ET
 
 import yt_dlp
-from yt_dlp.utils import DownloadCancelled as _YtdlpCancelled
 from yt_dlp.utils import DownloadError as _YtdlpDownloadError
 from yt_dlp.utils import UnavailableVideoError
 
@@ -42,26 +38,176 @@ from config import (
     get_download_dir,
     get_ig_browser,
 )
+from zardit_core.errors import (
+    ANSI_PATTERN,
+    DISK_FULL,
+    NAME_TOO_LONG,
+    NO_PERMISSION,
+    DownloadCancelled,
+    DownloadError,
+    PlaylistLinkError,
+    friendly_error as _core_friendly_error,
+)
+from zardit_core.formats import (
+    _DIRECT_IMAGE_EXTS,
+    _IMAGE_FORMAT_META,
+    _IMAGE_MIME_TO_EXT,
+    _OG_TAG_RE,
+    IMAGE_MAX_BYTES,
+    NOTE_PATTERN,
+    _image_ext_from_url,
+    _make_image_info,
+    resolution_label,
+)
+from zardit_core.instagram import (
+    _THREADS_DASH_RE,
+    _THREADS_DIMS_RE,
+    _THREADS_HEADERS,
+    _THREADS_MEDIA_HEADERS,
+    _THREADS_VIDEO_URL_RE,
+    _THREADS_VIDEO_VERSIONS_RE,
+    _decode_json_str,
+    _ig_best_candidate_from_obj,
+    _ig_formats_from_media_item,
+    _parse_meta_dash_manifest,
+    _parse_threads_dash_manifest,
+    parse_instagram_source,
+)
+from zardit_core.naming import (
+    MAX_TITLE_BYTES,
+    REPLACEMENTS,
+    RESERVED_SUFFIX_BYTES,
+    TEMP_FILE_PATTERN,
+    WINDOWS_PATH_LIMIT,
+    WINDOWS_RESERVED,
+    build_outtmpl,
+    clean_ig_title as _clean_ig_title,
+    format_duration,
+    format_file_size,
+    max_title_bytes,
+    safe_folder_name,
+    sanitize_name,
+)
+from zardit_core.urls import (
+    CROPPED_URL_RE as _CROPPED_URL_RE,
+    SUPPORTED_PLATFORMS,
+    detect_platform,
+    extract_media_url,
+    extract_youtube_url,
+    has_playlist_and_video,
+    host_matches as _host_matches,
+    is_cropped_thumb_url as _is_cropped_thumb_url,
+    is_mix_list,
+    list_id as _list_id,
+    validate_url,
+    validate_youtube_url,
+)
 
 # Messages go to the log file once an interface calls logs.setup_logging().
 log = logging.getLogger("zardit")
 log.addHandler(logging.NullHandler())
 
 
-# --------------------------------------------------------------------------
-# Errors and reporting
-# --------------------------------------------------------------------------
+def friendly_error(error):
+    """Turn an exception into a short, readable message."""
 
-class DownloadError(Exception):
-    """A problem described by a message that is safe to show to the user."""
+    return _core_friendly_error(error, ig_browser_lookup=lambda: get_ig_browser())
 
 
-class PlaylistLinkError(DownloadError):
-    """A playlist link was given where a single video was expected."""
-
-
-class DownloadCancelled(_YtdlpCancelled):
-    """Raised inside a progress hook to stop yt-dlp."""
+__all__ = [
+    "ANSI_PATTERN",
+    "AUDIO_BITRATES",
+    "AUDIO_CHOICES",
+    "DISK_FULL",
+    "DownloadCancelled",
+    "DownloadError",
+    "DownloadResult",
+    "FormatOption",
+    "IMAGE_FORMATS",
+    "IMAGE_MAX_BYTES",
+    "MAX_TITLE_BYTES",
+    "NAME_TOO_LONG",
+    "NOTE_PATTERN",
+    "NO_PERMISSION",
+    "ORIGINAL_AUDIO",
+    "ORIGINAL_IMAGE",
+    "PLAYLIST_QUALITIES",
+    "PlaylistInfo",
+    "PlaylistLinkError",
+    "PlaylistResult",
+    "ProgressTracker",
+    "REPLACEMENTS",
+    "RESERVED_SUFFIX_BYTES",
+    "Reporter",
+    "SPACE_FACTOR",
+    "SPACE_SLACK",
+    "SUPPORTED_PLATFORMS",
+    "TEMP_FILE_PATTERN",
+    "VIDEO_ID_PATTERN",
+    "VideoSummary",
+    "WINDOWS_PATH_LIMIT",
+    "WINDOWS_RESERVED",
+    "_CROPPED_URL_RE",
+    "_THREADS_DASH_RE",
+    "_THREADS_DIMS_RE",
+    "_THREADS_HEADERS",
+    "_THREADS_MEDIA_HEADERS",
+    "_THREADS_VIDEO_URL_RE",
+    "_THREADS_VIDEO_VERSIONS_RE",
+    "_check_disk_space",
+    "_clean_ig_title",
+    "_decode_json_str",
+    "_host_matches",
+    "_ig_best_candidate_from_obj",
+    "_ig_cookie_options",
+    "_ig_formats_from_media_item",
+    "_image_ext_from_url",
+    "_is_cropped_thumb_url",
+    "_list_id",
+    "_make_image_info",
+    "_parse_meta_dash_manifest",
+    "_parse_threads_dash_manifest",
+    "_resolve_instagram_share_url",
+    "available_qualities",
+    "audio_format_options",
+    "best_image_details",
+    "best_image_url",
+    "build_outtmpl",
+    "cleanup_incomplete_files",
+    "detect_platform",
+    "download_audio",
+    "download_image",
+    "download_playlist",
+    "download_video",
+    "estimate_size",
+    "extract_media_url",
+    "extract_youtube_url",
+    "fetch_playlist",
+    "fetch_video_info",
+    "find_existing_download",
+    "format_duration",
+    "format_file_size",
+    "friendly_error",
+    "get_output_directory",
+    "has_playlist_and_video",
+    "image_format_options",
+    "is_image_only_info",
+    "is_mix_list",
+    "is_video_entry",
+    "max_title_bytes",
+    "parse_instagram_source",
+    "parse_range",
+    "quality_options",
+    "resolution_label",
+    "safe_folder_name",
+    "sanitize_name",
+    "select_formats",
+    "summarize_video",
+    "validate_url",
+    "validate_youtube_url",
+    "video_format_options",
+    "video_selection",
+]
 
 
 class Reporter:
@@ -168,445 +314,10 @@ def _is_cancelled(cancel):
 
 
 # --------------------------------------------------------------------------
-# Small helpers
+# Small helpers & Meta helpers live in zardit_core
 # --------------------------------------------------------------------------
 
-ANSI_PATTERN = re.compile(r"\x1b\[[0-9;]*m")
 VIDEO_ID_PATTERN = re.compile(r"^[0-9A-Za-z_-]{11}$")
-
-SUPPORTED_PLATFORMS = (
-    ("YouTube", ("youtube.com", "youtu.be")),
-    ("Instagram", ("instagram.com", "instagr.am")),
-    ("Facebook", ("facebook.com", "fb.watch", "fb.com")),
-    ("Reddit", ("reddit.com", "redd.it", "v.redd.it")),
-    ("X / Twitter", ("twitter.com", "x.com", "t.co")),
-    ("Threads", ("threads.net", "threads.com")),
-)
-
-
-def _host_matches(hostname, domain):
-    return hostname == domain or hostname.endswith(f".{domain}")
-
-
-def detect_platform(url):
-    """Return a readable platform name for a media URL."""
-
-    try:
-        hostname = (urlparse(url).hostname or "").lower()
-    except ValueError:
-        return "Web"
-
-    for name, domains in SUPPORTED_PLATFORMS:
-        if any(_host_matches(hostname, d) for d in domains):
-            return name
-
-    return "Web"
-
-
-def validate_url(url):
-    """Validate an HTTP/HTTPS media URL from YouTube or another platform."""
-
-    if not isinstance(url, str) or any(ch.isspace() for ch in url.strip()):
-        return False
-
-    try:
-        parsed = urlparse(url.strip())
-        hostname = (parsed.hostname or "").lower()
-
-        return (
-            parsed.scheme in ("http", "https")
-            and bool(hostname)
-            and "." in hostname
-            and not hostname.startswith(".")
-            and not hostname.endswith(".")
-        )
-
-    except (ValueError, AttributeError):
-        return False
-
-
-def validate_youtube_url(url):
-    """Validate supported YouTube URLs."""
-
-    try:
-        parsed = urlparse(url)
-        hostname = (parsed.hostname or "").lower()
-
-        return (
-            parsed.scheme in ("http", "https")
-            and (
-                hostname == "youtu.be"
-                or hostname == "youtube.com"
-                or hostname.endswith(".youtube.com")
-            )
-        )
-
-    except (ValueError, AttributeError):
-        return False
-
-
-_URL_IN_TEXT = re.compile(r"https?://[^\s<>\"']+")
-
-
-def extract_media_url(text):
-    """Extract the first valid media URL from clipboard or pasted text."""
-
-    if not isinstance(text, str):
-        return None
-
-    stripped = text.strip()
-    if not stripped:
-        return None
-
-    if validate_url(stripped):
-        return stripped
-
-    for match in _URL_IN_TEXT.finditer(stripped):
-        candidate = match.group(0).rstrip(".,);]>'\"")
-        if validate_url(candidate):
-            return candidate
-
-    return None
-
-
-extract_youtube_url = extract_media_url
-
-
-def _list_id(url):
-    """The playlist ID in a link's query string, or None."""
-
-    try:
-        values = parse_qs(urlparse(url).query).get("list")
-    except ValueError:
-        return None
-
-    return values[0] if values else None
-
-
-def is_mix_list(list_id):
-    """True for YouTube's personalised Mix lists (list=RD...)."""
-
-    return bool(list_id) and list_id.startswith("RD") \
-        and not list_id.startswith("RDCLAK")
-
-
-def has_playlist_and_video(url):
-    """True if a link points at a video that is inside a real playlist."""
-
-    if not validate_youtube_url(url):
-        return False
-
-    list_id = _list_id(url)
-
-    if not list_id or is_mix_list(list_id):
-        return False
-
-    parsed = urlparse(url)
-    hostname = (parsed.hostname or "").lower()
-
-    if hostname == "youtu.be":
-        return bool(parsed.path.strip("/"))
-
-    return (
-        "v" in parse_qs(parsed.query)
-        or parsed.path.startswith(("/shorts/", "/live/"))
-    )
-
-
-def format_duration(seconds):
-    """Convert seconds into HH:MM:SS."""
-
-    if seconds is None:
-        return "Unknown"
-
-    hours, remainder = divmod(int(seconds), 3600)
-    minutes, seconds = divmod(remainder, 60)
-
-    return f"{hours:02}:{minutes:02}:{seconds:02}"
-
-
-def format_file_size(size):
-    """Convert bytes into a readable file size."""
-
-    if size is None:
-        return "Unknown"
-
-    size = float(size)
-
-    for unit in ("B", "KB", "MB", "GB"):
-        if size < 1024:
-            return f"{size:.1f} {unit}"
-
-        size /= 1024
-
-    return f"{size:.1f} TB"
-
-
-# --------------------------------------------------------------------------
-# Readable error messages
-# --------------------------------------------------------------------------
-
-DISK_FULL = "The disk is full. Free some space or choose another download folder."
-NO_PERMISSION = "No permission to write to the download folder. Choose another folder."
-NAME_TOO_LONG = (
-    "The file name or folder path is too long. "
-    "Use a shorter folder name or location."
-)
-
-# Errors raised by the operating system, recognised by their error number.
-_ERRNO_MESSAGES = {
-    errno.ENOSPC: DISK_FULL,
-    errno.EACCES: NO_PERMISSION,
-    errno.EPERM: NO_PERMISSION,
-    errno.EROFS: NO_PERMISSION,
-    errno.ENAMETOOLONG: NAME_TOO_LONG,
-}
-
-# Messages from yt-dlp, recognised by their text. The first match wins, so
-# more specific rules come before general ones.
-_ERROR_RULES = [
-    (re.compile(p, re.IGNORECASE), text) for p, text in (
-        (r"confirm your age|age[- ]restricted|age verification",
-         "This video is age-restricted and requires a signed-in account. "
-         "For Instagram, click IG in the top bar (or choose [G] in the CLI)."),
-        (r"not a bot",
-         "The site is asking to confirm you're not a bot. Wait a while, "
-         "update yt-dlp, or try another network."),
-        (r"members[- ]only|join this channel",
-         "This video is only available to channel members."),
-        (r"private video|private post",
-         "This video or post is private."),
-        (r"sign in|log in|login required|login_required|cookies|empty media response",
-         "This post or video requires a signed-in account."),
-        (r"in your country|geo[- ]?restrict|not made this video available"
-         r"|available in your region",
-         "This video isn't available in your country."),
-        (r"premieres in|live event will begin|is upcoming",
-         "This is a premiere or live event that hasn't started yet."),
-        (r"copyright",
-         "This video was blocked for copyright reasons."),
-        (r"requested format is not available|no video formats found"
-         r"|only images are available",
-         "That quality isn't available for this video. Try another one."),
-        (r"unsupported url",
-         "That link isn't a video or media post Zardit can download."),
-        (r"http error 403",
-         "Access was refused (HTTP 403). This is usually "
-         "temporary. Try again in a minute, or use Update yt-dlp in the app."),
-        (r"http error 429|too many requests|rate[- ]limit",
-         "Too many requests (HTTP 429). "
-         "Wait a few minutes and try again."),
-        (r"http error 5\d\d",
-         "The site had a server problem. Try again in a moment."),
-        (r"unavailable|no longer available|has been removed|been terminated",
-         "This video is unavailable. It may have been removed or made private."),
-        (r"javascript runtime|js runtime|n challenge|\bnsig\b"
-         r"|signature solving|challenge solving",
-         "yt-dlp couldn't solve the site's JavaScript check. Make sure Deno "
-         "is installed (run: deno --version), then use Update yt-dlp in the "
-         "app."),
-        (r"no space left|not enough space|disk full|\[errno 28\]",
-         DISK_FULL),
-        (r"permission denied|\[errno 13\]|read-only file system"
-         r"|access is denied",
-         NO_PERMISSION),
-        (r"file name too long|filename too long|\[errno 36\]|path too long",
-         NAME_TOO_LONG),
-        (r"ffprobe|ffmpeg|postprocessing",
-         "Media conversion failed. Check that FFmpeg is installed "
-         "and up to date."),
-        (r"timed out|timeout|connection|name or service not known"
-         r"|getaddrinfo|temporary failure in name resolution"
-         r"|network is unreachable|unable to download (webpage|api)",
-         "Network error. Check your internet connection and try again."),
-    )
-]
-
-
-def friendly_error(error):
-    """Turn an exception into a short, readable message."""
-
-    if isinstance(error, OSError) and error.errno in _ERRNO_MESSAGES:
-        return _ERRNO_MESSAGES[error.errno]
-
-    message = ANSI_PATTERN.sub("", str(error)).strip()
-    message = re.sub(r"^ERROR:\s*", "", message)
-
-    low_msg = message.lower()
-    if any(
-        tok in low_msg
-        for tok in (
-            "could not find cookies",
-            "failed to decrypt",
-            "app-bound",
-            "dpapi",
-            "keyring",
-            "cookie database",
-        )
-    ):
-        return (
-            "Could not read Instagram cookies from your browser (the browser may "
-            "encrypt cookies on this OS or is not installed). Try Firefox, or use "
-            "IG -> Paste Page Source (offline)."
-        )
-
-    is_ig_auth = any(
-        tok in low_msg
-        for tok in (
-            "instagram",
-            "registered users",
-            "empty media response",
-        )
-    ) and any(
-        tok in low_msg
-        for tok in (
-            "login",
-            "sign in",
-            "log in",
-            "registered users",
-            "empty media response",
-            "not granting access",
-            "cookies",
-            "private",
-        )
-    )
-    if is_ig_auth:
-        if get_ig_browser():
-            return (
-                "Instagram refused access with the connected browser cookies. "
-                "Make sure you're logged into an account that follows this profile, "
-                "or click IG -> Paste Page Source (offline)."
-            )
-        return (
-            "This Instagram post is private or requires sign-in. Click IG in the "
-            "top bar (or choose [G] in the CLI) to connect a browser or paste the "
-            "Page Source offline."
-        )
-
-    for pattern, text in _ERROR_RULES:
-        if pattern.search(message):
-            return text
-
-    return f"Download failed: {message[:300]}"
-
-
-# --------------------------------------------------------------------------
-# Safe file and folder names (Windows, Linux and macOS)
-# --------------------------------------------------------------------------
-
-WINDOWS_RESERVED = (
-    {"CON", "PRN", "AUX", "NUL"}
-    | {f"COM{i}" for i in range(1, 10)}
-    | {f"LPT{i}" for i in range(1, 10)}
-)
-
-REPLACEMENTS = str.maketrans({
-    ":": " -",
-    "/": "-",
-    "\\": "-",
-    "|": "-",
-    '"': "'",
-    "?": None,
-    "*": None,
-    "<": None,
-    ">": None,
-})
-
-MAX_TITLE_BYTES = 150
-RESERVED_SUFFIX_BYTES = 45    # " [2160p] [id]" plus temp extensions
-WINDOWS_PATH_LIMIT = 259
-
-
-def sanitize_name(name, max_bytes=MAX_TITLE_BYTES, fallback="untitled"):
-    """Make a string safe as a file or folder name on every platform."""
-
-    name = unicodedata.normalize("NFC", str(name or ""))
-
-    chars = (" " if c.isspace() else c for c in name)
-    name = "".join(
-        c for c in chars if unicodedata.category(c) not in ("Cc", "Cf")
-    )
-
-    name = name.translate(REPLACEMENTS)
-    name = re.sub(r" +", " ", name).strip(" .")
-
-    name = name.encode("utf-8")[:max_bytes].decode("utf-8", errors="ignore")
-    name = name.strip(" .")
-
-    if name.split(".")[0].strip().upper() in WINDOWS_RESERVED:
-        name = "_" + name
-
-    return name or fallback
-
-
-def max_title_bytes(directory):
-    """Shorten titles on Windows when the folder path is already long."""
-
-    limit = MAX_TITLE_BYTES
-
-    if sys.platform == "win32":
-        room = (
-            WINDOWS_PATH_LIMIT
-            - len(str(directory))
-            - 1
-            - RESERVED_SUFFIX_BYTES
-        )
-        limit = min(limit, room)
-
-    return max(limit, 30)
-
-
-def build_outtmpl(directory, title, video_id, tag):
-    """Build a safe name template, e.g. 'Title [720p] [id].%(ext)s'."""
-
-    safe_title = sanitize_name(
-        title, max_bytes=max_title_bytes(directory), fallback=video_id
-    )
-
-    # A literal % would be read as a template field by yt-dlp.
-    safe_title = safe_title.replace("%", "%%")
-
-    return f"{safe_title} {tag} [{video_id}].%(ext)s"
-
-
-def safe_folder_name(name, fallback="Playlist"):
-    """Make a string safe to use as a folder name."""
-
-    return sanitize_name(name, max_bytes=80, fallback=fallback)
-
-
-# --------------------------------------------------------------------------
-# Fetching information
-# --------------------------------------------------------------------------
-
-_THREADS_HEADERS = {
-    "User-Agent": "curl/8.5.0",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-}
-_THREADS_MEDIA_HEADERS = {
-    "User-Agent": "Mozilla/5.0",
-    "Referer": "https://www.threads.com/",
-}
-_THREADS_DASH_RE = re.compile(
-    r'"video_dash_manifest"\s*:\s*"((?:\\.|[^"\\])*)"'
-)
-_THREADS_VIDEO_VERSIONS_RE = re.compile(
-    r'"video_versions"\s*:\s*(\[[^\]]+\])'
-)
-_THREADS_VIDEO_URL_RE = re.compile(
-    r'"video_url"\s*:\s*"((?:\\.|[^"\\])*)"'
-)
-_THREADS_DIMS_RE = re.compile(
-    r'"original_(width|height)"\s*:\s*(\d+)'
-)
-
-
-def _decode_json_str(raw):
-    try:
-        return json.loads(f'"{raw}"')
-    except Exception:
-        return raw.replace("\\/", "/").replace("\\u0026", "&").replace("&amp;", "&")
 
 
 def _ig_cookie_options(url):
@@ -637,660 +348,13 @@ def _resolve_instagram_share_url(url):
             final_parsed = urlparse(final_url)
             if (
                 final_parsed.scheme == "https"
+                and validate_url(final_url)
                 and detect_platform(final_url) == "Instagram"
             ):
                 return final_url
     except Exception:
         pass
     return url
-
-
-def _parse_meta_dash_manifest(xml_text, headers=None):
-    """Extract DASH video and audio format dicts from Meta (Threads/IG) MPD XML."""
-
-    try:
-        root = ET.fromstring(xml_text)
-    except ET.ParseError:
-        return []
-
-    req_headers = dict(headers or _THREADS_MEDIA_HEADERS)
-    formats = []
-    seen_urls = set()
-    for elem in root.iter():
-        if elem.tag.rsplit("}", 1)[-1] != "Representation":
-            continue
-        mime = (elem.attrib.get("mimeType") or "").lower()
-        base_url = None
-        for child in elem:
-            if child.tag.rsplit("}", 1)[-1] == "BaseURL" and child.text:
-                base_url = html.unescape(child.text.strip())
-                break
-        if not base_url or not base_url.startswith("https://") or base_url in seen_urls:
-            continue
-        seen_urls.add(base_url)
-
-        fmt_id = elem.attrib.get("id") or hashlib.sha1(base_url.encode()).hexdigest()[:10]
-        bw = elem.attrib.get("bandwidth")
-        tbr = int(bw) / 1000.0 if (bw and bw.isdigit()) else None
-        fb_len = elem.attrib.get("FBContentLength")
-        filesize = int(fb_len) if (fb_len and fb_len.isdigit() and int(fb_len) > 0) else None
-        codecs = elem.attrib.get("codecs") or ""
-
-        if mime.startswith("video/"):
-            w = elem.attrib.get("width")
-            h = elem.attrib.get("height")
-            width = int(w) if (w and w.isdigit()) else None
-            height = int(h) if (h and h.isdigit()) else None
-            fb_label = elem.attrib.get("FBQualityLabel")
-            if not fb_label and width and height:
-                fb_label = f"{min(width, height)}p"
-            formats.append({
-                "format_id": fmt_id,
-                "url": base_url,
-                "ext": "mp4",
-                "protocol": "https",
-                "vcodec": codecs or "avc1",
-                "acodec": "none",
-                "width": width,
-                "height": height,
-                "tbr": tbr,
-                "format_note": fb_label,
-                "filesize": filesize,
-                "http_headers": dict(req_headers),
-            })
-        elif mime.startswith("audio/"):
-            formats.append({
-                "format_id": fmt_id,
-                "url": base_url,
-                "ext": "m4a",
-                "protocol": "https",
-                "vcodec": "none",
-                "acodec": codecs or "mp4a.40.5",
-                "tbr": tbr,
-                "filesize": filesize,
-                "http_headers": dict(req_headers),
-            })
-    return formats
-
-
-def _parse_threads_dash_manifest(xml_text):
-    """Extract DASH video and audio format dicts from Threads MPD XML."""
-
-    return _parse_meta_dash_manifest(xml_text, _THREADS_MEDIA_HEADERS)
-
-
-def _ig_best_candidate_from_obj(candidates):
-    """Return (url, width, height) for the largest uncropped Instagram image candidate."""
-
-    if not isinstance(candidates, list):
-        return (None, None, None)
-    best = None
-    best_score = (-1, -1)
-    for item in candidates:
-        if not isinstance(item, dict):
-            continue
-        u = item.get("url")
-        if not isinstance(u, str) or not u.startswith("https://"):
-            continue
-        w = item.get("width") or 0
-        h = item.get("height") or 0
-        uncropped = 0 if _is_cropped_thumb_url(u) else 1
-        score = (uncropped, int(w) * int(h))
-        if score >= best_score:
-            best_score = score
-            best = (u, int(w) if w else None, int(h) if h else None)
-    return best or (None, None, None)
-
-
-def _ig_formats_from_media_item(item, ig_headers):
-    """Build video/audio yt-dlp-compatible format list from one IG media JSON object."""
-
-    formats = []
-    seen = set()
-
-    dash_xml = item.get("video_dash_manifest")
-    if isinstance(dash_xml, str) and "<Representation" in dash_xml:
-        for f in _parse_meta_dash_manifest(dash_xml, ig_headers):
-            if f["url"] not in seen:
-                seen.add(f["url"])
-                formats.append(f)
-
-    for idx, v in enumerate(item.get("video_versions") or []):
-        if not isinstance(v, dict):
-            continue
-        v_url = v.get("url")
-        if (
-            isinstance(v_url, str)
-            and v_url.startswith("https://")
-            and v_url not in seen
-        ):
-            seen.add(v_url)
-            vw = v.get("width")
-            vh = v.get("height")
-            formats.append({
-                "format_id": f"ig-prog-{idx}",
-                "url": v_url,
-                "ext": "mp4",
-                "protocol": "https",
-                "vcodec": "h264",
-                "acodec": "aac",
-                "width": vw,
-                "height": vh,
-                "format_note": f"{min(vw, vh)}p" if (vw and vh) else "720p",
-                "http_headers": dict(ig_headers),
-            })
-
-    direct_video = item.get("video_url")
-    if (
-        not formats
-        and isinstance(direct_video, str)
-        and direct_video.startswith("https://")
-        and direct_video not in seen
-    ):
-        dims = item.get("dimensions") or {}
-        vw = dims.get("width") or item.get("original_width")
-        vh = dims.get("height") or item.get("original_height")
-        formats.append({
-            "format_id": "ig-direct",
-            "url": direct_video,
-            "ext": "mp4",
-            "protocol": "https",
-            "vcodec": "h264",
-            "acodec": "aac",
-            "width": vw,
-            "height": vh or 720,
-            "format_note": f"{min(vw, vh)}p" if (vw and vh) else "720p",
-            "http_headers": dict(ig_headers),
-        })
-
-    return formats
-
-
-def _clean_ig_title(raw_title, username=None, media_id="ig"):
-    """Collapse multi-line Instagram captions and strip hashtag walls for clean display & filenames."""
-
-    text = re.sub(r"\s+", " ", (raw_title or "")).strip()
-    # Strip Instagram og:description boilerplate: "12 likes, 0 comments - user on Date: "caption""
-    m = re.match(
-        r"^(?:\d[\d,.]*\s+likes?(?:,\s*\d[\d,.]*\s+comments?)?\s*-\s*[^:]+:\s*)(.+)$",
-        text,
-        re.IGNORECASE,
-    )
-    if m:
-        text = m.group(1).strip()
-    # Strip "Display Name on Instagram: "caption"" wrapper
-    m2 = re.match(r"^[^:\n]{1,60}\s+on\s+Instagram:\s*(.+)$", text, re.IGNORECASE)
-    if m2:
-        text = m2.group(1).strip()
-    text = text.strip('"\'“” .')
-
-    # Drop trailing hashtag walls (#tag1 #tag2 ...) when prose exists before them
-    no_tags = re.sub(r"(?:\s+#[A-Za-z0-9_]+){2,}\.?$", "", text).strip(" .")
-    if no_tags:
-        text = no_tags
-    elif text.startswith("#"):
-        text = ""
-
-    if len(text) > 90:
-        text = text[:89].rstrip(" ,;:-") + "…"
-
-    if text:
-        return text
-    if username and username != "Instagram":
-        return f"Video by {username}"
-    return f"Instagram Post ({media_id})"
-
-
-def parse_instagram_source(raw_text, source_url=None):
-    """Extract downloadable video, image, or carousel locally from pasted HTML or JSON.
-
-    Supports both ?__a=1&__d=dis JSON responses and browser view-source HTML pages
-    for private Instagram posts the user already has access to in their browser.
-    """
-
-    text = (raw_text or "").strip()
-    if not text:
-        raise DownloadError("Paste the Instagram page source or ?__a=1 JSON first.")
-    if len(text) > 20 * 1024 * 1024:
-        raise DownloadError("Pasted source text is too large (limit 20 MB).")
-
-    ig_headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Referer": "https://www.instagram.com/",
-    }
-    clean_url = (source_url or "").strip()
-    if clean_url.startswith("view-source:"):
-        clean_url = clean_url[len("view-source:"):].strip()
-    if not clean_url or not clean_url.startswith("https://"):
-        clean_url = "https://www.instagram.com/"
-
-    sc_match = re.search(
-        r"instagram\.com/(?:reel|reels|p|tv)/([A-Za-z0-9_-]+)", clean_url
-    )
-    shortcode = sc_match.group(1) if sc_match else None
-
-    def _build_alt_ids(primary_id, *extra_ids):
-        alts = []
-        candidates = [primary_id, *extra_ids]
-        for cid in candidates:
-            if isinstance(cid, str) and cid:
-                if cid not in alts and cid != primary_id:
-                    alts.append(cid)
-                if len(cid) >= 30 and cid[:11] not in alts and cid[:11] != primary_id:
-                    alts.append(cid[:11])
-        return alts
-
-    # 1. Try structured ?__a=1&__d=dis JSON directly.
-    if text.lstrip().startswith("{"):
-        try:
-            root = json.loads(text)
-        except ValueError:
-            root = None
-
-        if isinstance(root, dict):
-            item = None
-            items = root.get("items")
-            if isinstance(items, list) and items and isinstance(items[0], dict):
-                item = items[0]
-            elif isinstance(root.get("graphql"), dict) and isinstance(
-                root["graphql"].get("shortcode_media"), dict
-            ):
-                item = root["graphql"]["shortcode_media"]
-            elif isinstance(root.get("data"), dict):
-                data_obj = root["data"]
-                if isinstance(data_obj.get("shortcode_media"), dict):
-                    item = data_obj["shortcode_media"]
-                elif isinstance(
-                    data_obj.get("xdt_api__v1__media__shortcode__web_info"), dict
-                ):
-                    edges = (
-                        data_obj["xdt_api__v1__media__shortcode__web_info"].get("items")
-                        or []
-                    )
-                    if edges and isinstance(edges[0], dict):
-                        item = edges[0]
-
-            if item is not None:
-                item_code = (item.get("code") or item.get("shortcode") or "").strip()
-                media_id = (
-                    item_code
-                    or shortcode
-                    or str(item.get("pk") or item.get("id") or "ig_private")
-                ).split("_", 1)[0]
-                alt_ids = _build_alt_ids(media_id, shortcode, item_code)
-                caption_obj = item.get("caption")
-                raw_title = (
-                    caption_obj.get("text")
-                    if isinstance(caption_obj, dict)
-                    else None
-                )
-                if not raw_title:
-                    cap_edges = (
-                        item.get("edge_media_to_caption", {}).get("edges") or []
-                    )
-                    if cap_edges and isinstance(cap_edges[0], dict):
-                        raw_title = (cap_edges[0].get("node") or {}).get("text")
-                author = (
-                    (item.get("user") or {}).get("full_name")
-                    or (item.get("user") or {}).get("username")
-                    or (item.get("owner") or {}).get("full_name")
-                    or (item.get("owner") or {}).get("username")
-                    or "Instagram"
-                )
-                username = (
-                    (item.get("user") or {}).get("username")
-                    or (item.get("owner") or {}).get("username")
-                )
-                title = _clean_ig_title(raw_title, username=username or author, media_id=media_id)
-                post_url = (
-                    clean_url
-                    if shortcode
-                    else f"https://www.instagram.com/p/{media_id}/"
-                )
-                duration = item.get("video_duration")
-                if duration is not None:
-                    try:
-                        duration = int(float(duration))
-                    except (TypeError, ValueError):
-                        duration = None
-                upload_date = None
-                taken_at = item.get("taken_at") or item.get("taken_at_timestamp")
-                if isinstance(taken_at, (int, float)) and taken_at > 1_000_000_000:
-                    upload_date = time.strftime("%Y%m%d", time.gmtime(int(taken_at)))
-
-                # Carousel slides (carousel_media or GraphQL edge_sidecar_to_children)
-                raw_slides = item.get("carousel_media") or [
-                    e.get("node")
-                    for e in (
-                        item.get("edge_sidecar_to_children", {}).get("edges") or []
-                    )
-                    if isinstance(e, dict) and isinstance(e.get("node"), dict)
-                ]
-                if isinstance(raw_slides, list) and raw_slides:
-                    entries = []
-                    for idx, slide in enumerate(raw_slides, start=1):
-                        if not isinstance(slide, dict):
-                            continue
-                        slide_id = f"{media_id}_{idx}"
-                        img_u, img_w, img_h = _ig_best_candidate_from_obj(
-                            (slide.get("image_versions2") or {}).get("candidates")
-                        )
-                        if not img_u and isinstance(slide.get("display_url"), str):
-                            img_u = slide["display_url"]
-                            dims = slide.get("dimensions") or {}
-                            img_w = dims.get("width")
-                            img_h = dims.get("height")
-
-                        slide_fmts = _ig_formats_from_media_item(slide, ig_headers)
-                        if slide_fmts:
-                            entries.append({
-                                "id": slide_id,
-                                "_alt_ids": _build_alt_ids(slide_id),
-                                "title": f"Slide {idx}",
-                                "uploader": author,
-                                "thumbnail": img_u,
-                                "webpage_url": post_url,
-                                "extractor": "instagram",
-                                "extractor_key": "Instagram",
-                                "ext": "mp4",
-                                "formats": slide_fmts,
-                            })
-                        elif img_u and img_u.startswith("https://"):
-                            dim = f" ({img_w}×{img_h})" if img_w and img_h else ""
-                            entries.append({
-                                "_zardit_media_kind": "image",
-                                "id": slide_id,
-                                "title": f"Photo {idx}{dim}",
-                                "uploader": author,
-                                "url": img_u,
-                                "webpage_url": img_u,
-                                "image_url": img_u,
-                                "thumbnail": img_u,
-                                "width": img_w,
-                                "height": img_h,
-                                "http_headers": dict(ig_headers),
-                            })
-                    if len(entries) == 1:
-                        return entries[0]
-                    if entries:
-                        return {
-                            "_type": "playlist",
-                            "title": title,
-                            "entries": entries,
-                        }
-
-                # Single video / reel
-                thumb_u, thumb_w, thumb_h = _ig_best_candidate_from_obj(
-                    (item.get("image_versions2") or {}).get("candidates")
-                )
-                if not thumb_u and isinstance(item.get("display_url"), str):
-                    thumb_u = item["display_url"]
-                    dims = item.get("dimensions") or {}
-                    thumb_w = dims.get("width")
-                    thumb_h = dims.get("height")
-
-                fmts = _ig_formats_from_media_item(item, ig_headers)
-                if fmts:
-                    return {
-                        "id": media_id,
-                        "_alt_ids": alt_ids,
-                        "title": title,
-                        "uploader": author,
-                        "duration": duration,
-                        "upload_date": upload_date,
-                        "thumbnail": thumb_u,
-                        "webpage_url": post_url,
-                        "original_url": post_url,
-                        "extractor": "instagram",
-                        "extractor_key": "Instagram",
-                        "ext": "mp4",
-                        "formats": fmts,
-                    }
-
-                if thumb_u and thumb_u.startswith("https://"):
-                    return _make_image_info(
-                        thumb_u,
-                        title=title,
-                        channel=author,
-                        media_id=media_id,
-                        width=thumb_w,
-                        height=thumb_h,
-                        headers=ig_headers,
-                    )
-
-    # 2. Parse pasted view-source HTML from browser.
-    meta = {}
-    for match in _OG_TAG_RE.finditer(text):
-        key = (match.group(1) or match.group(4) or "").lower()
-        val = html.unescape(match.group(2) or match.group(3) or "").strip()
-        if key and val and key not in meta:
-            meta[key] = val
-
-    canon_match = re.search(
-        r'<link[^>]+rel=["\']canonical["\'][^>]+href=["\'](https://[^"\']+)["\']',
-        text,
-        re.IGNORECASE,
-    )
-    resolved_url = (
-        canon_match.group(1)
-        if canon_match
-        else meta.get("og:url") or clean_url
-    )
-    sc2 = re.search(
-        r"instagram\.com/(?:reel|reels|p|tv)/([A-Za-z0-9_-]+)", resolved_url
-    )
-    canon_sc = sc2.group(1) if sc2 else None
-    code_match = re.search(r'"code"\s*:\s*"([A-Za-z0-9_-]{6,64})"', text)
-    json_sc = code_match.group(1) if code_match else None
-
-    media_id = (
-        shortcode
-        or canon_sc
-        or json_sc
-        or hashlib.sha1(text[:4096].encode("utf-8", errors="ignore")).hexdigest()[:11]
-    )
-    alt_ids = _build_alt_ids(media_id, canon_sc, json_sc)
-
-    search_windows = []
-    for focus_code in dict.fromkeys(c for c in (canon_sc, json_sc, media_id[:11]) if c):
-        for m in re.finditer(rf'"code"\s*:\s*"{re.escape(focus_code)}"', text):
-            search_windows.append(text[max(0, m.start() - 25000):min(len(text), m.end() + 25000)])
-    search_windows.append(text)
-
-    scoped = search_windows[0]
-    username_m = re.search(r'"username"\s*:\s*"([A-Za-z0-9_.]{1,40})"', scoped)
-    fullname_m = re.search(r'"full_name"\s*:\s*"((?:\\.|[^"\\])*)"', scoped)
-    username = username_m.group(1) if username_m else None
-    fullname = _decode_json_str(fullname_m.group(1)) if fullname_m else None
-    author = (fullname or "").strip() or username
-    if not author:
-        og_t = meta.get("og:title") or ""
-        author_m = re.match(r"^([^:(]+?)\s+(?:on Instagram|\(@)", og_t)
-        author = author_m.group(1).strip() if author_m else "Instagram"
-
-    dur_m = re.search(r'"video_duration"\s*:\s*([0-9]+(?:\.[0-9]+)?)', scoped)
-    duration = int(float(dur_m.group(1))) if dur_m else None
-    taken_m = re.search(r'"taken_at"\s*:\s*(\d{10})', scoped)
-    upload_date = (
-        time.strftime("%Y%m%d", time.gmtime(int(taken_m.group(1))))
-        if taken_m
-        else None
-    )
-
-    cap_m = re.search(r'"caption"\s*:\s*\{\s*"text"\s*:\s*"((?:\\.|[^"\\])*)"', scoped)
-    raw_caption = _decode_json_str(cap_m.group(1)) if cap_m else None
-    raw_title = (
-        raw_caption
-        or meta.get("og:description")
-        or meta.get("og:title")
-        or meta.get("twitter:title")
-        or ""
-    )
-    title = _clean_ig_title(raw_title, username=username or author, media_id=media_id)
-
-    formats = []
-    seen_urls = set()
-
-    for win in search_windows:
-        for dm in _THREADS_DASH_RE.finditer(win):
-            xml_str = _decode_json_str(dm.group(1))
-            for f in _parse_meta_dash_manifest(xml_str, ig_headers):
-                if f["url"] not in seen_urls:
-                    seen_urls.add(f["url"])
-                    formats.append(f)
-            if formats:
-                break
-        if formats:
-            break
-
-    for win in search_windows:
-        for vm in _THREADS_VIDEO_VERSIONS_RE.finditer(win):
-            try:
-                versions = json.loads(vm.group(1))
-            except Exception:
-                try:
-                    versions = json.loads(_decode_json_str(vm.group(1).strip('"')))
-                except Exception:
-                    versions = None
-            if isinstance(versions, list):
-                for idx, v in enumerate(versions):
-                    if not isinstance(v, dict):
-                        continue
-                    v_url = v.get("url")
-                    if (
-                        isinstance(v_url, str)
-                        and v_url.startswith("https://")
-                        and "rsrc.php" not in v_url.lower()
-                        and v_url not in seen_urls
-                    ):
-                        seen_urls.add(v_url)
-                        vw = v.get("width")
-                        vh = v.get("height")
-                        formats.append({
-                            "format_id": f"ig-html-prog-{idx}",
-                            "url": v_url,
-                            "ext": "mp4",
-                            "protocol": "https",
-                            "vcodec": "h264",
-                            "acodec": "aac",
-                            "width": vw,
-                            "height": vh,
-                            "format_note": f"{min(vw, vh)}p" if (vw and vh) else "720p",
-                            "http_headers": dict(ig_headers),
-                        })
-                if any(f.get("acodec") != "none" for f in formats):
-                    break
-        if any(f.get("acodec") != "none" for f in formats):
-            break
-
-    if not any(f.get("vcodec") not in (None, "none") for f in formats):
-        og_vid = meta.get("og:video:secure_url") or meta.get("og:video")
-        cands = [og_vid] if og_vid else []
-        for vm in _THREADS_VIDEO_URL_RE.finditer(scoped):
-            cands.append(_decode_json_str(vm.group(1)))
-        for cand in cands:
-            if (
-                isinstance(cand, str)
-                and cand.startswith("https://")
-                and "rsrc.php" not in cand.lower()
-                and cand not in seen_urls
-            ):
-                seen_urls.add(cand)
-                formats.append({
-                    "format_id": "ig-html-direct",
-                    "url": cand,
-                    "ext": "mp4",
-                    "protocol": "https",
-                    "vcodec": "h264",
-                    "acodec": "aac",
-                    "height": 720,
-                    "format_note": "720p",
-                    "http_headers": dict(ig_headers),
-                })
-                break
-
-    img_urls = []
-    seen_imgs = set()
-    for dm in re.finditer(r'"display_url"\s*:\s*"((?:\\.|[^"\\])*)"', scoped):
-        u = _decode_json_str(dm.group(1))
-        if (
-            u.startswith("https://")
-            and not _is_cropped_thumb_url(u)
-            and "rsrc.php" not in u.lower()
-            and u not in seen_imgs
-        ):
-            seen_imgs.add(u)
-            img_urls.append(u)
-
-    og_img = (
-        meta.get("og:image:secure_url")
-        or meta.get("og:image")
-        or meta.get("twitter:image")
-    )
-    if (
-        isinstance(og_img, str)
-        and og_img.startswith("https://")
-        and not _is_cropped_thumb_url(og_img)
-        and og_img not in seen_imgs
-    ):
-        if not img_urls:
-            img_urls.append(og_img)
-
-    has_video = any(f.get("vcodec") not in (None, "none") for f in formats)
-    if has_video:
-        if not any(
-            resolution_label(f) for f in formats if f.get("vcodec") not in (None, "none")
-        ):
-            for f in formats:
-                if f.get("vcodec") not in (None, "none"):
-                    f["height"] = 720
-                    f["format_note"] = "720p"
-                    break
-        return {
-            "id": media_id,
-            "_alt_ids": alt_ids,
-            "title": title,
-            "uploader": author,
-            "duration": duration,
-            "upload_date": upload_date,
-            "thumbnail": og_img or (img_urls[0] if img_urls else None),
-            "webpage_url": resolved_url,
-            "original_url": resolved_url,
-            "extractor": "instagram",
-            "extractor_key": "Instagram",
-            "ext": "mp4",
-            "formats": formats,
-        }
-
-    if len(img_urls) > 1:
-        entries = []
-        for idx, u in enumerate(img_urls, start=1):
-            entries.append({
-                "_zardit_media_kind": "image",
-                "id": f"{media_id}_{idx}",
-                "title": f"Photo {idx}",
-                "uploader": author,
-                "url": u,
-                "webpage_url": u,
-                "image_url": u,
-                "thumbnail": u,
-                "http_headers": dict(ig_headers),
-            })
-        return {"_type": "playlist", "title": title, "entries": entries}
-
-    if len(img_urls) == 1:
-        return _make_image_info(
-            img_urls[0],
-            title=title,
-            channel=author,
-            media_id=media_id,
-            headers=ig_headers,
-        )
-
-    raise DownloadError(
-        "No Instagram video or image was found in the pasted source. "
-        "Make sure you are signed in and viewing the post in your browser before copying."
-    )
 
 
 def _extract_threads_media(url):
@@ -1757,31 +821,6 @@ STALE_FORMAT_KEYS = (
     "language", "http_headers", "fragments",
 )
 
-
-NOTE_PATTERN = re.compile(r"^(\d{3,4})p")
-
-
-def resolution_label(video_format):
-    """The resolution YouTube calls a format, such as 1080 for '1080p60'.
-
-    YouTube's own label is used when there is one. Otherwise the shorter
-    side of the picture is used.
-    """
-
-    match = NOTE_PATTERN.match(video_format.get("format_note") or "")
-
-    if match:
-        return int(match.group(1))
-
-    height = video_format.get("height")
-    width = video_format.get("width")
-
-    if height and width:
-        return min(height, width)
-
-    return height or None
-
-
 _IMAGE_EXTS = {"mhtml", "jpg", "jpeg", "png", "webp"}
 _VIDEO_CONTAINERS = {"mp4", "webm", "mov", "mkv", "m3u8"}
 
@@ -1890,7 +929,7 @@ def _probe_stream_size(stream, probe_cache):
     """Query Content-Length via HEAD (or 1-byte Range) for direct HTTPS streams."""
 
     url = stream.get("url")
-    if not isinstance(url, str) or not url.startswith("https://"):
+    if not isinstance(url, str) or not url.startswith("https://") or not validate_url(url):
         return None
 
     protocol = (stream.get("protocol") or "").lower()
@@ -2110,86 +1149,8 @@ def audio_format_options(info=None):
     return options
 
 
-_IMAGE_FORMAT_META = {
-    ORIGINAL_IMAGE: ("No Conversion", "Native image format and resolution"),
-    "png": ("Lossless", "PNG · High-quality lossless image"),
-    "jpg": ("Universal", "JPG · Compact & widely compatible"),
-    "webp": ("Modern", "WebP · Small file size"),
-}
-
-IMAGE_MAX_BYTES = 50 * 1024 * 1024
-_IMAGE_MIME_TO_EXT = {
-    "image/jpeg": "jpg",
-    "image/jpg": "jpg",
-    "image/png": "png",
-    "image/webp": "webp",
-    "image/gif": "gif",
-    "image/bmp": "bmp",
-    "image/avif": "avif",
-}
-_DIRECT_IMAGE_EXTS = ("jpg", "jpeg", "png", "webp", "gif", "bmp", "avif")
-_OG_TAG_RE = re.compile(
-    r'<meta[^>]+(?:property|name)=["\']([^"\']+)["\'][^>]+content=["\']([^"\']*)["\']'
-    r'|<meta[^>]+content=["\']([^"\']*)["\'][^>]+(?:property|name)=["\']([^"\']+)["\']',
-    re.IGNORECASE,
-)
-
-
-def _image_ext_from_url(url):
-    try:
-        parsed = urlparse(url)
-    except ValueError:
-        return None
-
-    path = parsed.path.lower()
-    for ext in _DIRECT_IMAGE_EXTS:
-        if path.endswith(f".{ext}"):
-            return "jpg" if ext == "jpeg" else ext
-
-    fmt = (parse_qs(parsed.query).get("format") or [None])[0]
-    if fmt and fmt.lower() in _DIRECT_IMAGE_EXTS:
-        return "jpg" if fmt.lower() == "jpeg" else fmt.lower()
-
-    return None
-
-
-def _make_image_info(
-    url, title="", ext=None, size=None, channel="", media_id="", width=None, height=None, headers=None
-):
-    ext = ext or _image_ext_from_url(url) or "jpg"
-    vid = media_id or hashlib.sha1(url.encode("utf-8", errors="ignore")).hexdigest()[:11]
-    fmt_entry = {
-        "format_id": "image",
-        "url": url,
-        "ext": ext,
-        "vcodec": "images",
-        "filesize": size,
-        "width": width,
-        "height": height,
-    }
-    if headers:
-        fmt_entry["http_headers"] = dict(headers)
-    info = {
-        "_zardit_media_kind": "image",
-        "id": vid,
-        "title": title or Path(urlparse(url).path).stem or "Image",
-        "uploader": channel or detect_platform(url),
-        "thumbnail": url,
-        "image_url": url,
-        "ext": ext,
-        "filesize": size,
-        "width": width,
-        "height": height,
-        "webpage_url": url,
-        "formats": [fmt_entry],
-    }
-    if headers:
-        info["http_headers"] = dict(headers)
-    return info
-
-
 def _probe_direct_image(url):
-    if not isinstance(url, str) or not url.startswith("https://"):
+    if not isinstance(url, str) or not url.startswith("https://") or not validate_url(url):
         return None
 
     ext_hint = _image_ext_from_url(url)
@@ -2198,7 +1159,8 @@ def _probe_direct_image(url):
             url, headers={"User-Agent": "Mozilla/5.0"}, method="HEAD"
         )
         with urllib.request.urlopen(req, timeout=_SIZE_PROBE_TIMEOUT) as resp:
-            if urlparse(resp.geturl()).scheme != "https":
+            final_url = resp.geturl()
+            if urlparse(final_url).scheme != "https" or not validate_url(final_url):
                 return None
             ctype = (resp.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
             length = resp.headers.get("Content-Length")
@@ -2233,7 +1195,8 @@ def _extract_reddit_images(url):
             json_url, headers={"User-Agent": f"Zardit/{APP_VERSION}"}
         )
         with urllib.request.urlopen(req, timeout=8) as resp:
-            if urlparse(resp.geturl()).scheme != "https":
+            final_url = resp.geturl()
+            if urlparse(final_url).scheme != "https" or not validate_url(final_url):
                 return None
             data = json.loads(resp.read(2 * 1024 * 1024).decode("utf-8", errors="replace"))
     except Exception:
@@ -2309,7 +1272,8 @@ def _extract_og_image(url):
             url, headers={"User-Agent": "Mozilla/5.0"}
         )
         with urllib.request.urlopen(req, timeout=8) as resp:
-            if urlparse(resp.geturl()).scheme != "https":
+            final_url = resp.geturl()
+            if urlparse(final_url).scheme != "https" or not validate_url(final_url):
                 return None
             ctype = (resp.headers.get("Content-Type") or "").lower()
             if ctype.startswith("image/"):
@@ -2365,7 +1329,8 @@ def _extract_facebook_images(url):
             url, headers={"User-Agent": "Mozilla/5.0"}
         )
         with urllib.request.urlopen(req, timeout=8) as resp:
-            if urlparse(resp.geturl()).scheme != "https":
+            final_url = resp.geturl()
+            if urlparse(final_url).scheme != "https" or not validate_url(final_url):
                 return None
             ctype = (resp.headers.get("Content-Type") or "").lower()
             if "html" not in ctype:
@@ -2501,16 +1466,6 @@ def _normalize_playlist_entries(entries, playlist_title, source_url):
             entry["title"] = f"Item {idx}"
 
 
-_CROPPED_URL_RE = re.compile(
-    r"(?:/[sp]\d+x\d+/|/c\d+\.\d+\.\d+\.\d+|dst-jpg_e\d+_[sp]|sqp=)",
-    re.IGNORECASE,
-)
-
-
-def _is_cropped_thumb_url(url):
-    return bool(url and _CROPPED_URL_RE.search(url))
-
-
 def best_image_details(info):
     """Return (url, width, height) for the best uncropped full-ratio image."""
 
@@ -2615,17 +1570,6 @@ def _video_tag(selected, requested):
 # --------------------------------------------------------------------------
 # Files and folders
 # --------------------------------------------------------------------------
-
-# Files yt-dlp leaves behind when a download stops part-way: partial and
-# resume files, separate streams (.f137.mp4), conversion files (.temp.mp3)
-# and thumbnails.
-TEMP_FILE_PATTERN = re.compile(
-    r"(\.part(-Frag\d+)?"
-    r"|\.ytdl"
-    r"|\.temp\.\w+"
-    r"|\.f[\w-]+\.\w+(\.part)?"
-    r"|\.(webp|jpg|jpeg|png))$"
-)
 
 # Disk space needed, as a multiple of the estimated download size. A video
 # needs room for its separate streams and the merged file at the same time.

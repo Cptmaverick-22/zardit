@@ -47,17 +47,12 @@ object ZarditEngine {
         RegexOption.IGNORE_CASE,
     )
 
-    fun isPlaylistUrl(url: String): Boolean {
-        val lower = url.lowercase(Locale.US)
-        return lower.contains("/playlist?") ||
-            (lower.contains("list=") && !lower.contains("watch?v=") && !lower.contains("youtu.be/")) ||
-            lower.contains("/sets/")
-    }
+    fun isPlaylistUrl(url: String): Boolean = ZarditParser.isPlaylistUrl(url)
 
     fun fetchPreview(context: Context, url: String): MediaPreview {
         val rawUrl = url.trim()
-        require(rawUrl.startsWith("http://") || rawUrl.startsWith("https://")) {
-            "Enter a valid http/https link."
+        require(ZarditParser.isSafePublicUrl(rawUrl)) {
+            "Enter a valid public http/https link (local or private network addresses are not allowed)."
         }
         val cleanUrl = normalizeAndResolveUrl(rawUrl, context)
         DiagnosticLog.log("Fetch", "URL resolved: $cleanUrl")
@@ -283,35 +278,11 @@ object ZarditEngine {
         )
     }
 
-    private val noteResRegex = Regex("""^(\d{3,4})p""", RegexOption.IGNORE_CASE)
+    private fun classifyVideoTier(width: Int, height: Int, note: String, buckets: List<Int>): Int? =
+        ZarditParser.classifyVideoTier(width, height, note, buckets)
 
-    private fun classifyVideoTier(width: Int, height: Int, note: String, buckets: List<Int>): Int? {
-        noteResRegex.find(note.trim())?.groupValues?.getOrNull(1)?.toIntOrNull()?.let { n ->
-            buckets.firstOrNull { n in (it - 20)..(it + 20) }?.let { return it }
-        }
-        val shortSide = if (width > 0 && height > 0) minOf(width, height) else height
-        buckets.firstOrNull { shortSide in (it - 20)..(it + 20) }?.let { return it }
-
-        // Handle ultra-wide / cinematic aspect ratios (e.g. 1920x866 -> 1080p, 2560x1156 -> 1440p)
-        val longSide = maxOf(width, height)
-        val widthTier = when {
-            longSide >= 3700 -> 2160
-            longSide >= 2450 -> 1440
-            longSide >= 1850 -> 1080
-            longSide >= 1200 -> 720
-            longSide >= 800 -> 480
-            longSide >= 600 -> 360
-            longSide >= 400 -> 240
-            longSide >= 220 -> 144
-            else -> null
-        }
-        return widthTier
-    }
-
-    private fun effectiveVideoHeight(width: Int, height: Int): Int {
-        if (width > 0 && height > 0) return minOf(width, height)
-        return height
-    }
+    private fun effectiveVideoHeight(width: Int, height: Int): Int =
+        ZarditParser.effectiveVideoHeight(width, height)
 
     private fun normalizeAndResolveUrl(url: String, context: Context? = null): String {
         var current = url
@@ -327,6 +298,7 @@ object ZarditEngine {
                 }
                 var hop = current
                 repeat(5) {
+                    if (!ZarditParser.isSafePublicUrl(hop)) return@repeat
                     val hopUrl = URL(hop)
                     val conn = (hopUrl.openConnection() as HttpURLConnection).apply {
                         requestMethod = "GET"
@@ -349,30 +321,23 @@ object ZarditEngine {
                             val decoded = nextParam?.let { URLDecoder.decode(it, "UTF-8") }
                             if (!decoded.isNullOrBlank()) {
                                 val resolved = if (decoded.startsWith("http")) decoded else "https://www.instagram.com$decoded"
-                                if ("/p/" in resolved || "/reel/" in resolved || "/tv/" in resolved) {
+                                if (ZarditParser.isSafePublicUrl(resolved) && ("/p/" in resolved || "/reel/" in resolved || "/tv/" in resolved)) {
                                     hop = resolved
                                     return@repeat
                                 }
                             }
                             return@repeat
                         }
+                        if (!ZarditParser.isSafePublicUrl(nextUrl)) return@repeat
                         hop = nextUrl
                     } else {
                         return@repeat
                     }
                 }
-                current = hop
+                if (ZarditParser.isSafePublicUrl(hop)) current = hop
             }
         }
-        if ("threads.com" in current.lowercase(Locale.US) || "threads.net" in current.lowercase(Locale.US)) {
-            current = current.replace("threads.com", "threads.net", ignoreCase = true)
-            // Strip Threads ?xmt=...&slof=1 tracking params that break extractors
-            val qIdx = current.indexOf('?')
-            if (qIdx > 0 && "/post/" in current) {
-                current = current.substring(0, qIdx)
-            }
-        }
-        return current
+        return ZarditParser.normalizeThreadsUrl(current)
     }
 
     fun decodeHtml(raw: String): String {
@@ -1270,95 +1235,8 @@ object ZarditEngine {
         return fetchWebMetaFallback(url)
     }
 
-    private data class ParsedDashManifest(
-        val videoOptions: List<VideoOption>,
-        val audioUrl: String?,
-        val audioBytes: Long?,
-    )
-
-    private fun parseDashManifest(rawXml: String): ParsedDashManifest? {
-        if (!rawXml.contains("<Representation")) return null
-        val repRegex = Regex("""<Representation\b([^>]*)>(.*?)</Representation>""", RegexOption.DOT_MATCHES_ALL)
-        val attrRegex = Regex("""([A-Za-z0-9_:-]+)="([^"]*)"""")
-        val baseUrlRegex = Regex("""<BaseURL[^>]*>(.*?)</BaseURL>""", RegexOption.DOT_MATCHES_ALL)
-        val buckets = listOf(1440, 1080, 720, 480, 360)
-
-        var audioUrl: String? = null
-        var audioBytes: Long? = null
-        var bestAudioBw = -1L
-
-        val bestVideoByBucket = mutableMapOf<Int, Pair<Int, VideoOption>>()
-
-        repRegex.findAll(rawXml).forEach { match ->
-            val attrs = mutableMapOf<String, String>()
-            attrRegex.findAll(match.groupValues[1]).forEach { a ->
-                attrs[a.groupValues[1]] = a.groupValues[2]
-            }
-            val mime = attrs["mimeType"]?.lowercase(Locale.US).orEmpty()
-            val codecs = attrs["codecs"].orEmpty()
-            val baseUrl = baseUrlRegex.find(match.groupValues[2])?.groupValues?.getOrNull(1)
-                ?.trim()?.replace("&amp;", "&")
-                ?.takeIf { it.startsWith("https://") || it.startsWith("http://") }
-                ?: return@forEach
-            val bw = attrs["bandwidth"]?.toLongOrNull() ?: 0L
-            val contentLen = attrs["FBContentLength"]?.toLongOrNull()?.takeIf { it > 0L }
-
-            if (mime.startsWith("audio/")) {
-                if (bw >= bestAudioBw) {
-                    bestAudioBw = bw
-                    audioUrl = baseUrl
-                    audioBytes = contentLen
-                }
-            } else if (mime.startsWith("video/")) {
-                val w = attrs["width"]?.toIntOrNull() ?: 0
-                val h = attrs["height"]?.toIntOrNull() ?: 0
-                val labelHint = attrs["FBQualityLabel"].orEmpty()
-                val tier = classifyVideoTier(w, h, labelHint, buckets) ?: return@forEach
-                val isH264 = codecs.startsWith("avc1", true) || codecs.startsWith("h264", true)
-                val isHevc = codecs.startsWith("hev1", true) || codecs.startsWith("hvc1", true)
-                val isVp9 = codecs.startsWith("vp09", true) || codecs.startsWith("vp9", true)
-                val isAv1 = codecs.startsWith("av01", true) || codecs.startsWith("av1", true)
-                if (!(isH264 || isHevc || isVp9 || isAv1)) return@forEach
-
-                val score = (when {
-                    isH264 -> 2_000
-                    isHevc -> 1_500
-                    isVp9 -> 1_000
-                    isAv1 -> 500
-                    else -> 0
-                }) + (bw / 10_000L).toInt().coerceIn(0, 400)
-                val codecHint = when {
-                    isH264 -> "MP4 · H.264"
-                    isHevc -> "MP4 · HEVC"
-                    isVp9 -> "MP4 · VP9"
-                    isAv1 -> "MP4 · AV1"
-                    else -> "MP4 · Video"
-                }
-                val opt = VideoOption(
-                    height = tier,
-                    label = "${tier}p",
-                    badge = qualityBadge(tier).ifEmpty { "MP4" },
-                    codecHint = codecHint,
-                    approxSizeBytes = contentLen,
-                    needsAudioMux = true,
-                    directUrl = baseUrl,
-                )
-                val prev = bestVideoByBucket[tier]
-                if (prev == null || score > prev.first) {
-                    bestVideoByBucket[tier] = score to opt
-                }
-            }
-        }
-
-        if (bestVideoByBucket.isEmpty()) return null
-        val options = bestVideoByBucket.values
-            .map { it.second.copy(
-                needsAudioMux = audioUrl != null,
-                approxSizeBytes = it.second.approxSizeBytes?.let { vs -> vs + (audioBytes ?: 0L) },
-            ) }
-            .sortedByDescending { it.height }
-        return ParsedDashManifest(options, audioUrl, audioBytes)
-    }
+    private fun parseDashManifest(rawXml: String): ParsedDashManifest? =
+        ZarditParser.parseDashManifest(rawXml)
 
     private fun fetchWebMetaFallback(url: String): MediaPreview? {
         val isThreads = detectPlatformName(url) == "Threads"
@@ -1528,18 +1406,8 @@ object ZarditEngine {
         return firstImageFallback
     }
 
-    private fun detectPlatformName(url: String): String {
-        val lower = url.lowercase(Locale.US)
-        return when {
-            "instagram.com" in lower || "instagr.am" in lower -> "Instagram"
-            "facebook.com" in lower || "fb.watch" in lower -> "Facebook"
-            "reddit.com" in lower || "redd.it" in lower -> "Reddit"
-            "twitter.com" in lower || "x.com" in lower -> "X"
-            "threads.net" in lower || "threads.com" in lower -> "Threads"
-            "youtube.com" in lower || "youtu.be" in lower -> "YouTube"
-            else -> "Web"
-        }
-    }
+    private fun detectPlatformName(url: String): String =
+        ZarditParser.detectPlatformName(url)
 
     private fun friendlyError(raw: String, isInstagram: Boolean = false): String {
         val lower = raw.lowercase(Locale.US)
@@ -1626,28 +1494,11 @@ object ZarditEngine {
         )
     }.getOrNull()
 
-    fun parseRangeSelection(input: String, total: Int): Set<Int> {
-        if (input.isBlank()) return (1..total).toSet()
-        val result = linkedSetOf<Int>()
-        input.split(",").forEach { part ->
-            val trimmed = part.trim()
-            if (trimmed.contains("-")) {
-                val bounds = trimmed.split("-", limit = 2)
-                val start = bounds[0].trim().toIntOrNull()
-                val end = bounds[1].trim().toIntOrNull()
-                if (start != null && end != null) {
-                    val lo = start.coerceIn(1, total)
-                    val hi = end.coerceIn(1, total)
-                    for (i in minOf(lo, hi)..maxOf(lo, hi)) result.add(i)
-                }
-            } else {
-                trimmed.toIntOrNull()?.takeIf { it in 1..total }?.let { result.add(it) }
-            }
-        }
-        return result
-    }
+    fun parseRangeSelection(input: String, total: Int): Set<Int> =
+        ZarditParser.parseRangeSelection(input, total)
 
     private fun probeUrlSize(url: String): Long? {
+        if (!ZarditParser.isSafePublicUrl(url)) return null
         runCatching {
             val conn = (URL(url).openConnection() as HttpURLConnection).apply {
                 requestMethod = "HEAD"
@@ -1712,21 +1563,13 @@ object ZarditEngine {
     ): String? {
         if (mediaId.isBlank()) return null
         val shortPrefix = if (mediaId.length >= 11) mediaId.take(11) else mediaId
-        val idMarker = "[$mediaId]"
         val qualityMarker = "[$qualityTag]"
-
-        fun matchesName(name: String): Boolean {
-            if (!name.contains(qualityMarker) || !name.endsWith(".$extension", ignoreCase = true)) {
-                return false
-            }
-            return name.contains(idMarker) || (shortPrefix.length >= 10 && name.contains("[$shortPrefix"))
-        }
 
         if (treeUri != null) {
             val dir = DocumentFile.fromTreeUri(context, treeUri)
             val match = dir?.listFiles()?.firstOrNull { file ->
                 val name = file.name ?: return@firstOrNull false
-                file.isFile && matchesName(name)
+                file.isFile && ZarditParser.matchesExistingDownloadName(name, mediaId, qualityTag, extension)
             }
             if (match != null) {
                 return "${dir.name ?: "Custom folder"}/${match.name}"
@@ -1760,7 +1603,7 @@ object ZarditEngine {
                 "Zardit",
             )
             val match = dir.listFiles()?.firstOrNull { file ->
-                file.isFile && matchesName(file.name)
+                file.isFile && ZarditParser.matchesExistingDownloadName(file.name, mediaId, qualityTag, extension)
             }
             return match?.let { "Downloads/Zardit/${it.name}" }
         }
@@ -1773,6 +1616,7 @@ object ZarditEngine {
         progressSpan: Float = 90f,
         onProgress: (Float, String) -> Unit,
     ) {
+        require(ZarditParser.isSafePublicUrl(fileUrl)) { "Unsafe download URL refused." }
         val conn = (URL(fileUrl).openConnection() as HttpURLConnection).apply {
             connectTimeout = 10_000
             readTimeout = 20_000
@@ -2006,6 +1850,7 @@ object ZarditEngine {
         treeUri: Uri?,
         onProgress: (Float, String) -> Unit,
     ): SaveResult {
+        require(ZarditParser.isSafePublicUrl(imageUrl)) { "Unsafe image URL refused." }
         onProgress(15f, "15% · Using Flash on the image…")
         val rawBytes = (URL(imageUrl).openConnection() as HttpURLConnection).run {
             connectTimeout = 10000
@@ -2155,34 +2000,9 @@ object ZarditEngine {
         }
     }
 
-    private fun qualityBadge(height: Int): String = when {
-        height >= 2160 -> "4K UHD"
-        height >= 1440 -> "2K QHD"
-        height >= 1080 -> "Full HD"
-        height >= 720 -> "HD"
-        height >= 480 -> "SD"
-        else -> ""
-    }
+    private fun qualityBadge(height: Int): String = ZarditParser.qualityBadge(height)
 
-    fun formatFileSize(bytes: Long?): String {
-        if (bytes == null || bytes <= 0L) return ""
-        val mb = bytes / (1024.0 * 1024.0)
-        return if (mb >= 1024.0) {
-            String.format(Locale.US, "~%.2f GB", mb / 1024.0)
-        } else {
-            String.format(Locale.US, "~%.1f MB", mb)
-        }
-    }
+    fun formatFileSize(bytes: Long?): String = ZarditParser.formatFileSize(bytes)
 
-    private fun formatDuration(seconds: Int): String {
-        if (seconds <= 0) return ""
-        val hrs = seconds / 3600
-        val mins = (seconds % 3600) / 60
-        val secs = seconds % 60
-        return if (hrs > 0) {
-            String.format(Locale.US, "%02d:%02d:%02d", hrs, mins, secs)
-        } else {
-            String.format(Locale.US, "%02d:%02d", mins, secs)
-        }
-    }
+    private fun formatDuration(seconds: Int): String = ZarditParser.formatDuration(seconds)
 }

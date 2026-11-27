@@ -25,20 +25,8 @@ object InstagramAuth {
     fun hasSession(context: Context): Boolean =
         File(context.applicationContext.filesDir, SESSION_FILE).isFile
 
-    fun extractMinimalCookies(rawCookieHeader: String?): Map<String, String> {
-        if (rawCookieHeader.isNullOrBlank()) return emptyMap()
-        val result = linkedMapOf<String, String>()
-        rawCookieHeader.split(";").forEach { part ->
-            val idx = part.indexOf('=')
-            if (idx <= 0) return@forEach
-            val name = part.substring(0, idx).trim()
-            val value = part.substring(idx + 1).trim()
-            if (name in allowedCookieNames && value.isNotEmpty()) {
-                result[name] = value
-            }
-        }
-        return if ("sessionid" in result) result else emptyMap()
-    }
+    fun extractMinimalCookies(rawCookieHeader: String?): Map<String, String> =
+        io.github.cptmaverick_22.zardit.downloader.ZarditParser.extractMinimalInstagramCookies(rawCookieHeader)
 
     fun saveCookies(context: Context, cookies: Map<String, String>) {
         if ("sessionid" !in cookies) return
