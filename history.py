@@ -8,12 +8,54 @@ from pathlib import Path
 import config
 
 MAX_HISTORY_ENTRIES = 500
+MAX_THUMBNAIL_BYTES = 2 * 1024 * 1024
 
 
 def history_file():
     """Path to the user's download history JSON file."""
 
     return config.CONFIG_DIR / "history.json"
+
+
+def thumbnails_dir():
+    """Directory for cached history entry thumbnails."""
+
+    return config.CONFIG_DIR / "thumbnails"
+
+
+def _delete_thumbnail_file(thumb_path):
+    """Best-effort removal of a cached history thumbnail."""
+
+    if not thumb_path:
+        return
+    try:
+        target = Path(thumb_path)
+        if target.is_file():
+            target.unlink()
+    except OSError:
+        pass
+
+
+def save_thumbnail_bytes(entry_id, data):
+    """Persist thumbnail bytes for a history entry and return its path, or None."""
+
+    if not entry_id or not isinstance(data, (bytes, bytearray)) or not data:
+        return None
+    if len(data) > MAX_THUMBNAIL_BYTES:
+        return None
+
+    safe_id = "".join(ch for ch in str(entry_id) if ch.isalnum() or ch in ("-", "_"))[:48]
+    if not safe_id:
+        return None
+
+    try:
+        folder = thumbnails_dir()
+        folder.mkdir(parents=True, exist_ok=True)
+        dest = folder / f"{safe_id}.img"
+        dest.write_bytes(bytes(data))
+        return str(dest)
+    except OSError:
+        return None
 
 
 def load_history():
@@ -51,6 +93,8 @@ def add_history_entry(
     duration=None,
     size=None,
     platform="",
+    thumbnail_bytes=None,
+    thumbnail_path=None,
 ):
     """Record a downloaded video or audio file at the top of history."""
 
@@ -66,8 +110,13 @@ def add_history_entry(
         except OSError:
             size = None
 
+    entry_id = uuid.uuid4().hex[:12]
+    saved_thumb = str(thumbnail_path or "")
+    if not saved_thumb and thumbnail_bytes:
+        saved_thumb = save_thumbnail_bytes(entry_id, thumbnail_bytes) or ""
+
     entry = {
-        "id": uuid.uuid4().hex[:12],
+        "id": entry_id,
         "video_id": str(video_id or ""),
         "title": str(title or file_obj.stem or "Untitled"),
         "channel": str(channel or ""),
@@ -78,12 +127,16 @@ def add_history_entry(
         "folder": str(file_obj.parent),
         "duration": duration,
         "size": size,
+        "thumbnail_path": saved_thumb,
         "downloaded_at": datetime.now().isoformat(timespec="seconds"),
     }
 
-    entries = [
-        item for item in load_history() if item.get("file_path") != resolved
-    ]
+    entries = []
+    for item in load_history():
+        if item.get("file_path") == resolved:
+            _delete_thumbnail_file(item.get("thumbnail_path"))
+        else:
+            entries.append(item)
     entries.insert(0, entry)
 
     try:
@@ -131,6 +184,7 @@ def remove_history_entry(entry_id, delete_file=False):
         return None, False
 
     deleted = _delete_disk_file(target.get("file_path")) if delete_file else False
+    _delete_thumbnail_file(target.get("thumbnail_path"))
 
     try:
         _write_history(remaining)
@@ -149,10 +203,10 @@ def clear_history(delete_files=False):
     entries = load_history()
     deleted_count = 0
 
-    if delete_files:
-        for item in entries:
-            if _delete_disk_file(item.get("file_path")):
-                deleted_count += 1
+    for item in entries:
+        _delete_thumbnail_file(item.get("thumbnail_path"))
+        if delete_files and _delete_disk_file(item.get("file_path")):
+            deleted_count += 1
 
     try:
         _write_history([])

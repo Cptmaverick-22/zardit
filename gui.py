@@ -627,7 +627,7 @@ class FormatRowWidget(QWidget):
 
 
 class HistoryRowWidget(QWidget):
-    """Custom list row for a downloaded video or audio in History."""
+    """Custom list row for a downloaded video, audio, or image in History."""
 
     def __init__(self, entry, on_play, on_remove, parent=None):
         super().__init__(parent)
@@ -644,23 +644,40 @@ class HistoryRowWidget(QWidget):
             badge_text, badge_obj = "IMAGE", "imageBadge"
         else:
             badge_text, badge_obj = "VIDEO", "typeBadge"
-        badge = plain_label(
-            badge_text,
-            wrap=False,
-            object_name=badge_obj,
-        )
-        layout.addWidget(badge, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        thumb_label = QLabel()
+        thumb_label.setFixedSize(88, 50)
+        thumb_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        thumb_path = entry.get("thumbnail_path") or ""
+        thumb_pix = QPixmap()
+        if thumb_path and Path(thumb_path).is_file() and thumb_pix.load(thumb_path):
+            thumb_label.setPixmap(rounded_pixmap(thumb_pix, QSize(88, 50), radius=7))
+        else:
+            thumb_label.setObjectName("historyThumbFallback")
+            thumb_label.setText(badge_text)
+        layout.addWidget(thumb_label, 0, Qt.AlignmentFlag.AlignVCenter)
 
         text_col = QVBoxLayout()
         text_col.setContentsMargins(0, 0, 0, 0)
         text_col.setSpacing(3)
 
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(6)
+
+        badge = plain_label(
+            badge_text,
+            wrap=False,
+            object_name=badge_obj,
+        )
         title = plain_label(
             entry.get("title") or "Untitled",
             wrap=True,
             object_name="formatTitle",
         )
-        text_col.addWidget(title)
+        title_row.addWidget(badge, 0, Qt.AlignmentFlag.AlignVCenter)
+        title_row.addWidget(title, 1)
+        text_col.addLayout(title_row)
 
         meta_parts = []
         if entry.get("platform"):
@@ -1748,6 +1765,28 @@ class MainWindow(QWidget):
         hero_layout.addWidget(hero_title)
         hero_layout.addWidget(hero_body)
         hero_layout.addLayout(pills_grid)
+
+        self.recent_section = QWidget()
+        recent_layout = QVBoxLayout(self.recent_section)
+        recent_layout.setContentsMargins(0, 6, 0, 0)
+        recent_layout.setSpacing(8)
+        recent_hdr = QHBoxLayout()
+        recent_title = QLabel("Recent downloads")
+        recent_title.setObjectName("sectionTitle")
+        recent_all_btn = QPushButton("View all")
+        recent_all_btn.setObjectName("compactBtn")
+        recent_all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        recent_all_btn.clicked.connect(lambda: self.show_page("history"))
+        recent_hdr.addWidget(recent_title)
+        recent_hdr.addStretch(1)
+        recent_hdr.addWidget(recent_all_btn)
+        recent_layout.addLayout(recent_hdr)
+        self.recent_rows_layout = QVBoxLayout()
+        self.recent_rows_layout.setSpacing(6)
+        recent_layout.addLayout(self.recent_rows_layout)
+        self.recent_section.hide()
+        hero_layout.addWidget(self.recent_section)
+
         self.content_layout.addWidget(self.hero_card)
 
         # Video / playlist card
@@ -3088,11 +3127,13 @@ class MainWindow(QWidget):
             folder_name = (
                 self.subfolder_input.text().strip() or self.playlist.title
             )
+            workers = max(1, min(int(load_settings().get("playlist_concurrency", 2) or 2), 4))
 
             def job(thread):
                 return download_playlist(
                     selected, kind, setting, folder_name,
                     reporter=QtReporter(thread), cancel=cancel,
+                    max_workers=workers,
                 )
 
             done_handler = self.on_playlist_done
@@ -3223,6 +3264,7 @@ class MainWindow(QWidget):
             video_id=video_id,
             duration=duration,
             platform=detect_platform(self.url) if self.url else "",
+            thumbnail_bytes=self._thumb_data,
         )
         self.refresh_history()
 
@@ -3251,14 +3293,24 @@ class MainWindow(QWidget):
         self.failed_items = result.failed
 
         for item in getattr(result, "completed_items", ()):
+            entry_thumb_bytes = None
+            vid = item.get("video_id")
+            if self.playlist is not None and vid:
+                for p_entry in self.playlist.entries:
+                    if p_entry.get("id") == vid:
+                        t_url = self._entry_preview_url(p_entry)
+                        if t_url and t_url in self._preview_cache:
+                            entry_thumb_bytes = self._preview_cache[t_url]
+                        break
             add_history_entry(
                 title=item.get("title"),
                 file_path=item.get("file_path"),
                 kind=item.get("kind"),
                 quality=item.get("quality", ""),
-                video_id=item.get("video_id", ""),
+                video_id=vid or "",
                 duration=item.get("duration"),
                 platform=detect_platform(self.url) if self.url else "",
+                thumbnail_bytes=entry_thumb_bytes or self._thumb_data,
             )
         if getattr(result, "completed_items", None):
             self.refresh_history()
@@ -3360,8 +3412,54 @@ class MainWindow(QWidget):
             btn.blockSignals(False)
         self.refresh_history()
 
+    def _refresh_recent_tiles(self, all_entries):
+        while self.recent_rows_layout.count():
+            child = self.recent_rows_layout.takeAt(0)
+            widget = child.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+        recent = all_entries[:3]
+        self.recent_section.setVisible(bool(recent))
+        for entry in recent:
+            tile = QFrame()
+            tile.setObjectName("recentTile")
+            row = QHBoxLayout(tile)
+            row.setContentsMargins(10, 8, 10, 8)
+            row.setSpacing(10)
+
+            thumb_lbl = QLabel()
+            thumb_lbl.setFixedSize(56, 36)
+            thumb_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            t_path = entry.get("thumbnail_path") or ""
+            pix = QPixmap()
+            if t_path and Path(t_path).is_file() and pix.load(t_path):
+                thumb_lbl.setPixmap(rounded_pixmap(pix, QSize(56, 36), radius=5))
+            else:
+                thumb_lbl.setObjectName("historyThumbFallback")
+                thumb_lbl.setText(str(entry.get("kind", "video")).upper()[:3])
+            row.addWidget(thumb_lbl)
+
+            text_col = QVBoxLayout()
+            text_col.setSpacing(1)
+            t_lbl = plain_label(entry.get("title") or "Untitled", wrap=False, object_name="formatTitle")
+            meta = " · ".join(p for p in (entry.get("platform"), entry.get("quality")) if p)
+            m_lbl = plain_label(meta, wrap=False, object_name="formatDetail")
+            text_col.addWidget(t_lbl)
+            text_col.addWidget(m_lbl)
+            row.addLayout(text_col, 1)
+
+            play_btn = QPushButton("Play")
+            play_btn.setObjectName("compactBtn")
+            play_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            play_btn.setEnabled(Path(entry.get("file_path", "")).is_file())
+            play_btn.clicked.connect(lambda _c=False, e=entry: self.play_history_entry(e))
+            row.addWidget(play_btn)
+            self.recent_rows_layout.addWidget(tile)
+
     def refresh_history(self):
         all_entries = load_history()
+        self._refresh_recent_tiles(all_entries)
         total_count = len(all_entries)
         self.nav_history_btn.setText(
             f"History ({total_count})" if total_count else "History"

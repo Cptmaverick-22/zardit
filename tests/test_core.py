@@ -1,11 +1,14 @@
+import socket
 import sys
 import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from zardit_core.urls import has_private_dns_resolution
 from downloader import (
     DownloadCancelled,
     DownloadError,
@@ -176,6 +179,25 @@ class LinkTests(unittest.TestCase):
         ):
             with self.subTest(bad=bad):
                 self.assertFalse(validate_url(bad))
+
+    def test_dns_rebinding_resolution_blocks_private_ips(self):
+        with mock.patch.object(
+            socket, "getaddrinfo",
+            return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0))],
+        ):
+            self.assertTrue(has_private_dns_resolution("rebind.example.com"))
+            self.assertFalse(validate_url("https://rebind.example.com/video.mp4", check_dns=True))
+
+        with mock.patch.object(
+            socket, "getaddrinfo",
+            return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))],
+        ):
+            self.assertFalse(has_private_dns_resolution("example.com"))
+            self.assertTrue(validate_url("https://example.com/video.mp4", check_dns=True))
+
+        with mock.patch.object(socket, "getaddrinfo", side_effect=socket.gaierror("offline")):
+            self.assertFalse(has_private_dns_resolution("offline.example.com"))
+            self.assertTrue(validate_url("https://offline.example.com/video.mp4", check_dns=True))
 
 
 class FormattingTests(unittest.TestCase):

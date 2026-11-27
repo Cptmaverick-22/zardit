@@ -63,13 +63,15 @@ class DownloadService : Service() {
                 val mode = DownloadMode.valueOf(modeName)
                 val videoHeight = intent.getIntExtra(EXTRA_VIDEO_HEIGHT, 1080)
                 val audioId = intent.getStringExtra(EXTRA_AUDIO_ID)
-                val audioOption = ZarditEngine.defaultAudioOptions.find { it.id == audioId }
+                val audioOption = ZarditEngine.findAudioOption(audioId)
                 val imageFormatName = intent.getStringExtra(EXTRA_IMAGE_FORMAT) ?: ImageFormat.ORIGINAL.name
                 val imageFormat = runCatching { ImageFormat.valueOf(imageFormatName) }.getOrDefault(ImageFormat.ORIGINAL)
                 val imageUrls = intent.getStringArrayListExtra(EXTRA_IMAGE_URLS).orEmpty()
                 val batchUrls = intent.getStringArrayListExtra(EXTRA_BATCH_URLS).orEmpty()
                 val batchTitles = intent.getStringArrayListExtra(EXTRA_BATCH_TITLES).orEmpty()
                 val batchIds = intent.getStringArrayListExtra(EXTRA_BATCH_IDS).orEmpty()
+                val batchThumbs = intent.getStringArrayListExtra(EXTRA_BATCH_THUMBS).orEmpty()
+                val thumbnailUrl = intent.getStringExtra(EXTRA_THUMBNAIL_URL)
                 val directVideoUrl = intent.getStringExtra(EXTRA_DIRECT_VIDEO_URL)
                 val directAudioUrl = intent.getStringExtra(EXTRA_DIRECT_AUDIO_URL)
                 val useInstagramCookies = intent.getBooleanExtra(EXTRA_USE_IG_COOKIES, false)
@@ -90,6 +92,8 @@ class DownloadService : Service() {
                     batchUrls = batchUrls,
                     batchTitles = batchTitles,
                     batchIds = batchIds,
+                    batchThumbs = batchThumbs,
+                    thumbnailUrl = thumbnailUrl,
                     directVideoUrl = directVideoUrl,
                     directAudioUrl = directAudioUrl,
                     useInstagramCookies = useInstagramCookies,
@@ -115,6 +119,8 @@ class DownloadService : Service() {
         batchUrls: List<String>,
         batchTitles: List<String>,
         batchIds: List<String>,
+        batchThumbs: List<String>,
+        thumbnailUrl: String?,
         directVideoUrl: String?,
         directAudioUrl: String?,
         useInstagramCookies: Boolean,
@@ -157,10 +163,13 @@ class DownloadService : Service() {
 
                 if (mode == DownloadMode.IMAGE && imageUrls.isNotEmpty()) {
                     var lastLocation = ""
+                    var lastContentUri: String? = null
+                    var lastFileName = ""
                     imageUrls.forEachIndexed { idx, imgUrl ->
                         if (cancelled.get()) return@launch
                         val prefix = if (imageUrls.size > 1) "[${idx + 1}/${imageUrls.size}] " else ""
                         val itemId = if (imageUrls.size > 1) "${mediaId}_${idx + 1}" else mediaId
+                        val historyId = "${itemId}_${imageFormat.id}_${imageFormat.ext}"
                         val saved = ZarditEngine.downloadImage(
                             context = applicationContext,
                             imageUrl = imgUrl,
@@ -171,10 +180,13 @@ class DownloadService : Service() {
                         ) { pct, status ->
                             updateProgress(title, pct, "$prefix$status")
                         }
+                        val thumbPath = ZarditEngine.cacheHistoryThumbnail(applicationContext, historyId, imgUrl)
                         lastLocation = saved.savedLocation
+                        lastContentUri = saved.contentUri
+                        lastFileName = saved.fileName
                         historyStore.add(
                             HistoryItem(
-                                id = "${itemId}_${imageFormat.id}_${imageFormat.ext}",
+                                id = historyId,
                                 mediaId = itemId,
                                 title = if (imageUrls.size > 1) "$title (${idx + 1})" else title,
                                 platform = platform,
@@ -183,11 +195,19 @@ class DownloadService : Service() {
                                 savedLocation = saved.savedLocation,
                                 contentUri = saved.contentUri,
                                 timestampMs = System.currentTimeMillis(),
+                                thumbnailPath = thumbPath,
+                                fileSizeBytes = saved.fileSizeBytes,
                             ),
                         )
                     }
                     if (!cancelled.get()) {
-                        finishCompleted(title, lastLocation, alreadyExisted = false)
+                        finishCompleted(
+                            title = title,
+                            savedLocation = lastLocation,
+                            alreadyExisted = false,
+                            contentUri = if (imageUrls.size == 1) lastContentUri else null,
+                            fileName = if (imageUrls.size == 1) lastFileName else "",
+                        )
                     }
                     return@launch
                 }
@@ -202,6 +222,7 @@ class DownloadService : Service() {
                         if (cancelled.get()) return@launch
                         val itemTitle = batchTitles.getOrElse(idx) { "Item ${idx + 1}" }
                         val itemId = batchIds.getOrElse(idx) { "${mediaId}_${idx + 1}" }
+                        val itemThumb = batchThumbs.getOrNull(idx) ?: thumbnailUrl
                         val prefix = "[${idx + 1}/${batchUrls.size}] "
 
                         val existing = ZarditEngine.findExistingDownload(
@@ -245,9 +266,15 @@ class DownloadService : Service() {
                         }
                         downloadedCount++
                         lastLocation = saved.savedLocation
+                        val historyId = "${itemId}_${qTag}_$ext"
+                        val thumbPath = ZarditEngine.cacheHistoryThumbnail(
+                            applicationContext,
+                            historyId,
+                            if (mode == DownloadMode.IMAGE) itemUrl else itemThumb,
+                        )
                         historyStore.add(
                             HistoryItem(
-                                id = "${itemId}_${qTag}_$ext",
+                                id = historyId,
                                 mediaId = itemId,
                                 title = itemTitle,
                                 platform = platform,
@@ -256,6 +283,8 @@ class DownloadService : Service() {
                                 savedLocation = saved.savedLocation,
                                 contentUri = saved.contentUri,
                                 timestampMs = System.currentTimeMillis(),
+                                thumbnailPath = thumbPath,
+                                fileSizeBytes = saved.fileSizeBytes,
                             ),
                         )
                     }
@@ -311,9 +340,11 @@ class DownloadService : Service() {
                 }
 
                 if (!cancelled.get()) {
+                    val historyId = "${mediaId}_${qTag}_$ext"
+                    val thumbPath = ZarditEngine.cacheHistoryThumbnail(applicationContext, historyId, thumbnailUrl)
                     historyStore.add(
                         HistoryItem(
-                            id = "${mediaId}_${qTag}_$ext",
+                            id = historyId,
                             mediaId = mediaId,
                             title = title,
                             platform = platform,
@@ -322,9 +353,17 @@ class DownloadService : Service() {
                             savedLocation = saved.savedLocation,
                             contentUri = saved.contentUri,
                             timestampMs = System.currentTimeMillis(),
+                            thumbnailPath = thumbPath,
+                            fileSizeBytes = saved.fileSizeBytes,
                         ),
                     )
-                    finishCompleted(title, saved.savedLocation, alreadyExisted = false)
+                    finishCompleted(
+                        title = title,
+                        savedLocation = saved.savedLocation,
+                        alreadyExisted = false,
+                        contentUri = saved.contentUri,
+                        fileName = saved.fileName,
+                    )
                 }
             } catch (t: Throwable) {
                 if (!cancelled.get()) {
@@ -370,11 +409,19 @@ class DownloadService : Service() {
         )
     }
 
-    private fun finishCompleted(title: String, savedLocation: String, alreadyExisted: Boolean) {
+    private fun finishCompleted(
+        title: String,
+        savedLocation: String,
+        alreadyExisted: Boolean,
+        contentUri: String? = null,
+        fileName: String = "",
+    ) {
         _state.value = DownloadState.Completed(
             title = title,
             savedLocation = savedLocation,
             alreadyExisted = alreadyExisted,
+            contentUri = contentUri,
+            fileName = fileName,
         )
         val mgr = getSystemService(NotificationManager::class.java)
         mgr.notify(
@@ -463,6 +510,8 @@ class DownloadService : Service() {
         private const val EXTRA_BATCH_URLS = "extra_batch_urls"
         private const val EXTRA_BATCH_TITLES = "extra_batch_titles"
         private const val EXTRA_BATCH_IDS = "extra_batch_ids"
+        private const val EXTRA_BATCH_THUMBS = "extra_batch_thumbs"
+        private const val EXTRA_THUMBNAIL_URL = "extra_thumbnail_url"
         private const val EXTRA_DIRECT_VIDEO_URL = "extra_direct_video_url"
         private const val EXTRA_DIRECT_AUDIO_URL = "extra_direct_audio_url"
         private const val EXTRA_USE_IG_COOKIES = "extra_use_ig_cookies"
@@ -493,6 +542,8 @@ class DownloadService : Service() {
             batchUrls: List<String> = emptyList(),
             batchTitles: List<String> = emptyList(),
             batchIds: List<String> = emptyList(),
+            batchThumbs: List<String> = emptyList(),
+            thumbnailUrl: String? = null,
             directVideoUrl: String? = null,
             directAudioUrl: String? = null,
             useInstagramCookies: Boolean = false,
@@ -514,6 +565,8 @@ class DownloadService : Service() {
                 putStringArrayListExtra(EXTRA_BATCH_URLS, ArrayList(batchUrls))
                 putStringArrayListExtra(EXTRA_BATCH_TITLES, ArrayList(batchTitles))
                 putStringArrayListExtra(EXTRA_BATCH_IDS, ArrayList(batchIds))
+                putStringArrayListExtra(EXTRA_BATCH_THUMBS, ArrayList(batchThumbs))
+                putExtra(EXTRA_THUMBNAIL_URL, thumbnailUrl)
                 putExtra(EXTRA_DIRECT_VIDEO_URL, directVideoUrl)
                 putExtra(EXTRA_DIRECT_AUDIO_URL, directAudioUrl)
                 putExtra(EXTRA_USE_IG_COOKIES, useInstagramCookies)

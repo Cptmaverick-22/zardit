@@ -1,6 +1,7 @@
 package io.github.cptmaverick_22.zardit.data
 
 import android.content.Context
+import java.io.File
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -14,10 +15,13 @@ data class HistoryItem(
     val savedLocation: String,
     val contentUri: String?,
     val timestampMs: Long,
+    val thumbnailPath: String? = null,
+    val fileSizeBytes: Long? = null,
 )
 
 class HistoryStore(context: Context) {
-    private val prefs = context.applicationContext.getSharedPreferences("zardit_history", Context.MODE_PRIVATE)
+    private val appContext = context.applicationContext
+    private val prefs = appContext.getSharedPreferences("zardit_history", Context.MODE_PRIVATE)
 
     fun loadAll(): List<HistoryItem> {
         val raw = prefs.getString(KEY_ITEMS, "[]") ?: "[]"
@@ -26,6 +30,8 @@ class HistoryStore(context: Context) {
             buildList {
                 for (i in 0 until arr.length()) {
                     val obj = arr.getJSONObject(i)
+                    val thumb = obj.optString("thumbnailPath").ifBlank { null }
+                    val size = obj.optLong("fileSizeBytes", -1L).takeIf { it > 0L }
                     add(
                         HistoryItem(
                             id = obj.optString("id"),
@@ -37,6 +43,8 @@ class HistoryStore(context: Context) {
                             savedLocation = obj.optString("savedLocation"),
                             contentUri = obj.optString("contentUri").ifBlank { null },
                             timestampMs = obj.optLong("timestampMs"),
+                            thumbnailPath = thumb?.takeIf { File(it).isFile },
+                            fileSizeBytes = size,
                         ),
                     )
                 }
@@ -46,14 +54,23 @@ class HistoryStore(context: Context) {
 
     fun add(item: HistoryItem) {
         val current = loadAll().filterNot { it.id == item.id }
-        saveAll(listOf(item) + current.take(99))
+        val kept = listOf(item) + current.take(99)
+        saveAll(kept)
     }
 
     fun remove(id: String) {
-        saveAll(loadAll().filterNot { it.id == id })
+        val current = loadAll()
+        val removed = current.firstOrNull { it.id == id }
+        removed?.thumbnailPath?.let { path ->
+            runCatching { File(path).delete() }
+        }
+        saveAll(current.filterNot { it.id == id })
     }
 
     fun clear() {
+        runCatching {
+            thumbnailsDir(appContext).listFiles()?.forEach { it.delete() }
+        }
         saveAll(emptyList())
     }
 
@@ -71,6 +88,8 @@ class HistoryStore(context: Context) {
                     put("savedLocation", item.savedLocation)
                     put("contentUri", item.contentUri ?: "")
                     put("timestampMs", item.timestampMs)
+                    put("thumbnailPath", item.thumbnailPath ?: "")
+                    put("fileSizeBytes", item.fileSizeBytes ?: -1L)
                 },
             )
         }
@@ -79,5 +98,8 @@ class HistoryStore(context: Context) {
 
     companion object {
         private const val KEY_ITEMS = "items"
+
+        fun thumbnailsDir(context: Context): File =
+            File(context.applicationContext.filesDir, "thumbnails").apply { mkdirs() }
     }
 }

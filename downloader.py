@@ -18,6 +18,7 @@ import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
@@ -940,7 +941,7 @@ def _probe_stream_size(stream, probe_cache):
     """Query Content-Length via HEAD (or 1-byte Range) for direct HTTPS streams."""
 
     url = stream.get("url")
-    if not isinstance(url, str) or not url.startswith("https://") or not validate_url(url):
+    if not isinstance(url, str) or not url.startswith("https://") or not validate_url(url, check_dns=True):
         return None
 
     protocol = (stream.get("protocol") or "").lower()
@@ -1010,7 +1011,11 @@ def _streams_size(selected, probe_cache=None):
                 size = bitrate * 125 * stream_duration
 
         if not size and probe_cache is not None:
-            size = _probe_stream_size(stream, probe_cache)
+            stream_url = stream.get("url")
+            if stream_url in probe_cache:
+                size = probe_cache[stream_url]
+            else:
+                size = _probe_stream_size(stream, probe_cache)
 
         if not size:
             return None  # A partial total would be misleading.
@@ -1062,13 +1067,46 @@ def video_format_options(info):
     """Return structured FormatOption objects for available video qualities."""
 
     started = time.monotonic()
-    options = []
-    probe_cache = {}
+    qualities = list(available_qualities(info))
+    selections = []
+    streams_to_probe = []
+    seen_probe_urls = set()
 
-    for quality in available_qualities(info):
+    for quality in qualities:
         selected = select_formats(info, video_selection(quality))
         if selected is None:
             selected = select_formats(info, video_selection(quality, ceiling=True))
+        selections.append((quality, selected))
+        if selected:
+            duration = selected.get("duration")
+            for stream in selected.get("requested_formats") or [selected]:
+                has_meta_size = bool(
+                    stream.get("filesize")
+                    or stream.get("filesize_approx")
+                    or (
+                        (stream.get("tbr") or (stream.get("vbr") or 0) + (stream.get("abr") or 0))
+                        and (stream.get("duration") or duration)
+                    )
+                )
+                s_url = stream.get("url")
+                if not has_meta_size and isinstance(s_url, str) and s_url not in seen_probe_urls:
+                    seen_probe_urls.add(s_url)
+                    streams_to_probe.append(stream)
+
+    probe_cache = {}
+    if len(streams_to_probe) > 1:
+        local_results = {}
+        with ThreadPoolExecutor(max_workers=min(4, len(streams_to_probe))) as pool:
+            futs = [(s.get("url"), pool.submit(_probe_stream_size, s, {})) for s in streams_to_probe]
+            for s_url, fut in futs:
+                try:
+                    local_results[s_url] = fut.result()
+                except Exception:
+                    local_results[s_url] = None
+        probe_cache.update(local_results)
+
+    options = []
+    for quality, selected in selections:
         size = _streams_size(selected, probe_cache=probe_cache) if selected else None
 
         details_parts = ["MP4"]
@@ -1161,7 +1199,7 @@ def audio_format_options(info=None):
 
 
 def _probe_direct_image(url):
-    if not isinstance(url, str) or not url.startswith("https://") or not validate_url(url):
+    if not isinstance(url, str) or not url.startswith("https://") or not validate_url(url, check_dns=True):
         return None
 
     ext_hint = _image_ext_from_url(url)
@@ -1171,7 +1209,7 @@ def _probe_direct_image(url):
         )
         with urllib.request.urlopen(req, timeout=_SIZE_PROBE_TIMEOUT) as resp:
             final_url = resp.geturl()
-            if urlparse(final_url).scheme != "https" or not validate_url(final_url):
+            if urlparse(final_url).scheme != "https" or not validate_url(final_url, check_dns=True):
                 return None
             ctype = (resp.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
             length = resp.headers.get("Content-Length")
@@ -2183,9 +2221,9 @@ def download_image(
 
 
 def download_playlist(
-    entries, kind, setting, folder_name, reporter=None, cancel=None,
+    entries, kind, setting, folder_name, reporter=None, cancel=None, max_workers=1,
 ):
-    """Download playlist entries one by one into their own folder.
+    """Download playlist entries sequentially or concurrently into their own folder.
 
     kind is "video" (setting = maximum height) or "audio" (setting = bitrate).
     A failing item is recorded and the playlist continues.
@@ -2204,21 +2242,26 @@ def download_playlist(
     reporter.message(f"Folder: {folder}")
 
     result = PlaylistResult(total=len(entries), folder=folder)
+    workers = max(1, min(int(max_workers or 1), 4))
+    lock = threading.Lock()
 
-    for number, entry in enumerate(entries, start=1):
+    def _run_entry(number, entry):
         if _is_cancelled(cancel):
-            result.cancelled = True
-            break
+            with lock:
+                result.cancelled = True
+            return
 
         video_id = entry.get("id")
         title = entry.get("title") or video_id or f"Item {number}"
 
-        reporter.playlist_item(number, result.total, title)
+        with lock:
+            reporter.playlist_item(number, result.total, title)
 
         if not video_id and not (entry.get("webpage_url") or entry.get("url")):
-            reporter.message(f"{title}: missing video ID.", "error")
-            result.failed.append((title, "Missing video ID."))
-            continue
+            with lock:
+                reporter.message(f"{title}: missing video ID.", "error")
+                result.failed.append((title, "Missing video ID."))
+            return
 
         entry_url = (
             entry.get("webpage_url")
@@ -2252,37 +2295,50 @@ def download_playlist(
                 )
 
         except DownloadError as error:
-            reporter.message(str(error), "error")
-            result.failed.append((title, str(error)))
-            continue
+            with lock:
+                reporter.message(str(error), "error")
+                result.failed.append((title, str(error)))
+            return
 
-        if outcome.status == "completed":
-            result.completed += 1
-            if outcome.file_path is not None:
-                actual_kind = "image" if (kind == "image" or is_image_entry) else kind
-                desc = (
-                    f"{(setting if kind == 'image' else ORIGINAL_IMAGE).upper()} image"
-                    if actual_kind == "image"
-                    else _plan(kind, setting, True)["description"]
+        with lock:
+            if outcome.status == "completed":
+                result.completed += 1
+                if outcome.file_path is not None:
+                    actual_kind = "image" if (kind == "image" or is_image_entry) else kind
+                    desc = (
+                        f"{(setting if kind == 'image' else ORIGINAL_IMAGE).upper()} image"
+                        if actual_kind == "image"
+                        else _plan(kind, setting, True)["description"]
+                    )
+                    result.completed_items.append({
+                        "title": title,
+                        "video_id": video_id,
+                        "file_path": outcome.file_path,
+                        "kind": actual_kind,
+                        "quality": desc,
+                        "duration": entry.get("duration"),
+                    })
+
+            elif outcome.status == "exists":
+                result.skipped += 1
+                reporter.message(
+                    f"Already downloaded: {outcome.filename}", "warning"
                 )
-                result.completed_items.append({
-                    "title": title,
-                    "video_id": video_id,
-                    "file_path": outcome.file_path,
-                    "kind": actual_kind,
-                    "quality": desc,
-                    "duration": entry.get("duration"),
-                })
 
-        elif outcome.status == "exists":
-            result.skipped += 1
-            reporter.message(
-                f"Already downloaded: {outcome.filename}", "warning"
-            )
+            else:
+                result.cancelled = True
 
-        else:
-            result.cancelled = True
-            break
+    if workers == 1 or len(entries) <= 1:
+        for number, entry in enumerate(entries, start=1):
+            if _is_cancelled(cancel) or result.cancelled:
+                result.cancelled = True
+                break
+            _run_entry(number, entry)
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(_run_entry, number, entry) for number, entry in enumerate(entries, start=1)]
+            for fut in futures:
+                fut.result()
 
     log.info(
         "Playlist done: %d completed, %d skipped, %d failed%s",

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ipaddress
 import re
+import socket
 from urllib.parse import parse_qs, urlparse
 
 SUPPORTED_PLATFORMS = (
@@ -48,6 +49,16 @@ def detect_platform(url):
     return "Web"
 
 
+def _is_public_ip_address(addr):
+    """True when ipaddress object is a globally routable IP (not private/loopback/CGNAT)."""
+
+    if not addr.is_global:
+        return False
+    if addr.version == 4 and addr in _CGNAT_NET:
+        return False
+    return True
+
+
 def is_public_hostname(hostname):
     """True when hostname is a syntactically public host (not localhost or private IP)."""
 
@@ -67,16 +78,45 @@ def is_public_hostname(hostname):
             return False
         return True
 
-    # Reject loopback (127.0.0.1, ::1), RFC1918 (10/8, 172.16/12, 192.168/16),
-    # link-local (169.254/16, fe80::/10), CGNAT (100.64/10), multicast, and unspecified.
-    if not addr.is_global:
-        return False
-    if addr.version == 4 and addr in _CGNAT_NET:
-        return False
-    return True
+    return _is_public_ip_address(addr)
 
 
-def validate_url(url):
+def has_private_dns_resolution(hostname):
+    """True when hostname resolves via DNS to any private, loopback, link-local, or CGNAT IP.
+
+    Returns False on DNS lookup errors (e.g. offline environments or unresolvable test domains)
+    so syntactic checks still work without network access.
+    """
+
+    host = (hostname or "").strip().lower().rstrip(".")
+    if not host:
+        return True
+
+    try:
+        addr = ipaddress.ip_address(host)
+        return not _is_public_ip_address(addr)
+    except ValueError:
+        pass
+
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError:
+        return False
+
+    for info in infos:
+        sockaddr = info[4] if len(info) >= 5 else ()
+        if not sockaddr:
+            continue
+        ip_str = str(sockaddr[0]).split("%", 1)[0]
+        try:
+            if not _is_public_ip_address(ipaddress.ip_address(ip_str)):
+                return True
+        except ValueError:
+            return True
+    return False
+
+
+def validate_url(url, check_dns=False):
     """Validate a public HTTP/HTTPS media URL (blocking credentials and local IPs)."""
 
     if not isinstance(url, str) or any(ch.isspace() for ch in url.strip()):
@@ -88,7 +128,11 @@ def validate_url(url):
             return False
         if parsed.username is not None or parsed.password is not None:
             return False
-        return is_public_hostname(parsed.hostname)
+        if not is_public_hostname(parsed.hostname):
+            return False
+        if check_dns and has_private_dns_resolution(parsed.hostname):
+            return False
+        return True
     except (ValueError, AttributeError):
         return False
 

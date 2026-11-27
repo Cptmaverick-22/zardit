@@ -19,6 +19,8 @@ import io.github.cptmaverick_22.zardit.downloader.AppUpdater
 import io.github.cptmaverick_22.zardit.downloader.AudioOption
 import io.github.cptmaverick_22.zardit.downloader.DownloadMode
 import io.github.cptmaverick_22.zardit.downloader.DownloadState
+import io.github.cptmaverick_22.zardit.downloader.FfmpegAddonAvailability
+import io.github.cptmaverick_22.zardit.downloader.FfmpegAddonManager
 import io.github.cptmaverick_22.zardit.downloader.ImageFormat
 import io.github.cptmaverick_22.zardit.downloader.MediaPreview
 import io.github.cptmaverick_22.zardit.downloader.ThemeMode
@@ -38,6 +40,8 @@ data class MainUiState(
     val activeTab: AppTab = AppTab.DOWNLOADER,
     val url: String = "",
     val themeMode: ThemeMode = ThemeMode.AUTO,
+    val defaultVideoQuality: Int = 1080,
+    val wifiOnlyDownloads: Boolean = false,
     val folderDisplayName: String = "Downloads/Zardit",
     val hasCustomFolder: Boolean = false,
     val isFetching: Boolean = false,
@@ -63,6 +67,11 @@ data class MainUiState(
     val autoCheckUpdates: Boolean = true,
     val pendingInstallApkPath: String? = null,
     val needInstallPermissionPrompt: Boolean = false,
+    val ffmpegInstalled: Boolean = false,
+    val ffmpegSizeBytes: Long? = null,
+    val isInstallingFfmpeg: Boolean = false,
+    val ffmpegDownloadPct: Int = 0,
+    val ffmpegStatus: String? = null,
     val isInstagramConnected: Boolean = false,
     val isFacebookConnected: Boolean = false,
     val history: List<HistoryItem> = emptyList(),
@@ -81,9 +90,13 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
     private val _uiState = MutableStateFlow(
         MainUiState(
             themeMode = prefs.getThemeMode(),
+            defaultVideoQuality = prefs.getDefaultVideoQuality(),
+            wifiOnlyDownloads = prefs.isWifiOnlyDownloadsEnabled(),
             folderDisplayName = prefs.getFolderDisplayName(),
             hasCustomFolder = prefs.getTreeUri() != null,
             autoCheckUpdates = prefs.isAppUpdateAutoCheckEnabled(),
+            ffmpegInstalled = FfmpegAddonManager.isInstalled(application),
+            ffmpegSizeBytes = FfmpegAddonManager.installedSizeBytes(application),
             isInstagramConnected = InstagramAuth.hasSession(application),
             isFacebookConnected = FacebookAuth.hasSession(application),
             history = historyStore.loadAll(),
@@ -131,6 +144,16 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
     fun onThemeModeSelected(mode: ThemeMode) {
         prefs.setThemeMode(mode)
         _uiState.update { it.copy(themeMode = mode) }
+    }
+
+    fun setDefaultVideoQuality(height: Int) {
+        prefs.setDefaultVideoQuality(height)
+        _uiState.update { it.copy(defaultVideoQuality = height) }
+    }
+
+    fun setWifiOnlyDownloads(enabled: Boolean) {
+        prefs.setWifiOnlyDownloadsEnabled(enabled)
+        _uiState.update { it.copy(wifiOnlyDownloads = enabled) }
     }
 
     fun onFolderPicked(uri: Uri?) {
@@ -264,9 +287,13 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
 
         viewModelScope.launch(Dispatchers.IO) {
             runCatching { ZarditEngine.fetchPreview(app, target) }
-                .onSuccess { preview ->
+                .onSuccess { rawPreview ->
+                    val preview = rawPreview.copy(
+                        audioOptions = ZarditEngine.audioOptionsWithAddon(app, rawPreview.audioOptions),
+                    )
+                    val preferredCap = _uiState.value.defaultVideoQuality
                     val defaultHeight = preview.videoOptions
-                        .firstOrNull { it.height <= 1080 }?.height
+                        .firstOrNull { it.height <= preferredCap }?.height
                         ?: preview.videoOptions.firstOrNull()?.height
                     val defaultMode = if (preview.imageUrls.isNotEmpty() && preview.videoOptions.isEmpty()) {
                         DownloadMode.IMAGE
@@ -341,6 +368,12 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         val current = _uiState.value
         val preview = current.preview ?: return
         if (current.existingDownloadPath != null) return
+        if (current.wifiOnlyDownloads && !ZarditEngine.isWifiConnected(app)) {
+            _uiState.update {
+                it.copy(updateBanner = "Wi-Fi Only mode is enabled in Settings. Connect to Wi-Fi or turn it off to download.")
+            }
+            return
+        }
 
         val basePlatform = preview.platform.substringBefore(" · ")
         val mediaKind = when (current.downloadMode) {
@@ -368,6 +401,8 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
                     batchUrls = withThumb.map { it.thumbnailUrl!! },
                     batchTitles = withThumb.map { it.title },
                     batchIds = withThumb.map { it.id },
+                    batchThumbs = withThumb.map { it.thumbnailUrl.orEmpty() },
+                    thumbnailUrl = preview.thumbnailUrl,
                 )
             } else {
                 DownloadService.start(
@@ -382,6 +417,8 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
                     batchUrls = selected.map { it.url },
                     batchTitles = selected.map { it.title },
                     batchIds = selected.map { it.id },
+                    batchThumbs = selected.map { it.thumbnailUrl.orEmpty() },
+                    thumbnailUrl = preview.thumbnailUrl,
                 )
             }
             return
@@ -406,6 +443,7 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
             audioId = current.selectedAudioId,
             imageFormat = current.selectedImageFormat,
             imageUrls = chosenImages,
+            thumbnailUrl = preview.thumbnailUrl ?: chosenImages.firstOrNull(),
             directVideoUrl = selectedVidOpt?.directUrl ?: preview.directVideoUrl,
             directAudioUrl = preview.directAudioUrl,
             useInstagramCookies = preview.usedInstagramAuth ||
@@ -610,6 +648,70 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
     fun setAutoCheckUpdates(enabled: Boolean) {
         prefs.setAppUpdateAutoCheckEnabled(enabled)
         _uiState.update { it.copy(autoCheckUpdates = enabled) }
+    }
+
+    fun installFfmpegAddon() {
+        if (_uiState.value.isInstallingFfmpeg) return
+        _uiState.update {
+            it.copy(
+                isInstallingFfmpeg = true,
+                ffmpegDownloadPct = 0,
+                ffmpegStatus = "Checking release assets for FFmpeg addon…",
+            )
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                when (val avail = FfmpegAddonManager.checkAvailability()) {
+                    is FfmpegAddonAvailability.NotPublished -> avail.message
+                    is FfmpegAddonAvailability.Available -> {
+                        _uiState.update {
+                            it.copy(ffmpegStatus = "Downloading & verifying ${avail.asset.name}…")
+                        }
+                        FfmpegAddonManager.install(app, avail.asset) { pct ->
+                            _uiState.update { it.copy(ffmpegDownloadPct = pct) }
+                        }
+                        "FFmpeg addon installed (SHA-256 verified). MP3 options enabled."
+                    }
+                }
+            }.onSuccess { msg ->
+                val installed = FfmpegAddonManager.isInstalled(app)
+                val size = FfmpegAddonManager.installedSizeBytes(app)
+                _uiState.update { state ->
+                    val updatedPreview = state.preview?.let { p ->
+                        p.copy(audioOptions = ZarditEngine.audioOptionsWithAddon(app, p.audioOptions))
+                    }
+                    state.copy(
+                        isInstallingFfmpeg = false,
+                        ffmpegInstalled = installed,
+                        ffmpegSizeBytes = size,
+                        ffmpegStatus = msg,
+                        preview = updatedPreview,
+                    )
+                }
+            }.onFailure { err ->
+                _uiState.update {
+                    it.copy(
+                        isInstallingFfmpeg = false,
+                        ffmpegStatus = err.message ?: "Could not install FFmpeg addon.",
+                    )
+                }
+            }
+        }
+    }
+
+    fun removeFfmpegAddon() {
+        FfmpegAddonManager.uninstall(app)
+        _uiState.update { state ->
+            val cleanedAudio = state.preview?.audioOptions?.filterNot { it.requiresFfmpeg }
+            val updatedPreview = state.preview?.copy(audioOptions = cleanedAudio.orEmpty())
+            state.copy(
+                ffmpegInstalled = false,
+                ffmpegSizeBytes = null,
+                ffmpegStatus = "FFmpeg addon removed. Base MP4/M4A features unaffected.",
+                selectedAudioId = if (state.selectedAudioId.startsWith("mp3_")) "orig_m4a" else state.selectedAudioId,
+                preview = updatedPreview,
+            )
+        }
     }
 
     fun buildDiagnosticReport(): String = DiagnosticLog.buildReport(app)

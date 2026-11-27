@@ -19,6 +19,18 @@ class ZarditPrefs(context: Context) {
         prefs.edit().putString(KEY_THEME, mode.name).apply()
     }
 
+    fun getDefaultVideoQuality(): Int = prefs.getInt(KEY_DEFAULT_VIDEO_QUALITY, 1080)
+
+    fun setDefaultVideoQuality(height: Int) {
+        prefs.edit().putInt(KEY_DEFAULT_VIDEO_QUALITY, height).apply()
+    }
+
+    fun isWifiOnlyDownloadsEnabled(): Boolean = prefs.getBoolean(KEY_WIFI_ONLY_DOWNLOADS, false)
+
+    fun setWifiOnlyDownloadsEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_WIFI_ONLY_DOWNLOADS, enabled).apply()
+    }
+
     fun getTreeUri(): Uri? {
         val raw = prefs.getString(KEY_TREE_URI, null) ?: return null
         return runCatching { Uri.parse(raw) }.getOrNull()
@@ -70,6 +82,8 @@ class ZarditPrefs(context: Context) {
 
     companion object {
         private const val KEY_THEME = "theme_mode"
+        private const val KEY_DEFAULT_VIDEO_QUALITY = "default_video_quality"
+        private const val KEY_WIFI_ONLY_DOWNLOADS = "wifi_only_downloads"
         private const val KEY_TREE_URI = "download_tree_uri"
         private const val KEY_AUTO_CHECK_UPDATES = "auto_check_app_updates"
         private const val KEY_LAST_APP_UPDATE_CHECK = "last_app_update_check_ms"

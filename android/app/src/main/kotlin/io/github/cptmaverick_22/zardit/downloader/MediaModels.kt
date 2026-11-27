@@ -7,8 +7,9 @@ enum class ThemeMode(val label: String) {
 }
 
 enum class AppTab(val label: String) {
-    DOWNLOADER("Downloader"),
+    DOWNLOADER("Home"),
     HISTORY("History"),
+    SETTINGS("Settings"),
 }
 
 enum class DownloadMode(val label: String) {
@@ -42,6 +43,8 @@ data class AudioOption(
     val bitrateKbps: Int?,
     val isOriginal: Boolean = false,
     val approxSizeBytes: Long? = null,
+    val requiresFfmpeg: Boolean = false,
+    val ext: String = "m4a",
 )
 
 data class PlaylistEntry(
@@ -76,6 +79,7 @@ data class SaveResult(
     val fileName: String,
     val savedLocation: String,
     val contentUri: String?,
+    val fileSizeBytes: Long? = null,
 )
 
 sealed interface DownloadState {
@@ -90,6 +94,8 @@ sealed interface DownloadState {
         val title: String,
         val savedLocation: String,
         val alreadyExisted: Boolean = false,
+        val contentUri: String? = null,
+        val fileName: String = "",
     ) : DownloadState
 
     data class Failed(

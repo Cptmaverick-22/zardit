@@ -335,6 +335,22 @@ def build_qt_stylesheet(theme_name):
         letter-spacing: 2px;
     }}
 
+    QLabel#historyThumbFallback {{
+        background-color: {c["surface_alt"]};
+        color: {c["text_secondary"]};
+        border: 1px solid {c["border"]};
+        border-radius: 7px;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.8px;
+    }}
+
+    QFrame#recentTile {{
+        background-color: {c["surface_alt"]};
+        border: 1px solid {c["border"]};
+        border-radius: 10px;
+    }}
+
     QFrame#card, QFrame#mediaCard, QFrame#heroCard {{
         background-color: {c["surface"]};
         border: 1px solid {c["border"]};

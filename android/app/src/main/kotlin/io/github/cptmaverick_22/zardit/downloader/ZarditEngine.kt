@@ -4,6 +4,8 @@ import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
@@ -20,6 +22,7 @@ import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
 import io.github.cptmaverick_22.zardit.data.DiagnosticLog
 import io.github.cptmaverick_22.zardit.data.FacebookAuth
+import io.github.cptmaverick_22.zardit.data.HistoryStore
 import io.github.cptmaverick_22.zardit.data.InstagramAuth
 import java.io.File
 import java.net.HttpURLConnection
@@ -37,6 +40,57 @@ object ZarditEngine {
         AudioOption("orig_m4a", "Best Audio", "M4A / AAC · Native quality", null, isOriginal = true),
         AudioOption("compact_m4a", "Compact Audio", "M4A · Smaller file", 128, isOriginal = false),
     )
+
+    val ffmpegAudioOptions = listOf(
+        AudioOption(
+            id = "mp3_320",
+            label = "320 kbps MP3",
+            subtitle = "MP3 · Maximum quality (FFmpeg)",
+            bitrateKbps = 320,
+            isOriginal = false,
+            requiresFfmpeg = true,
+            ext = "mp3",
+        ),
+        AudioOption(
+            id = "mp3_192",
+            label = "192 kbps MP3",
+            subtitle = "MP3 · Balanced quality (FFmpeg)",
+            bitrateKbps = 192,
+            isOriginal = false,
+            requiresFfmpeg = true,
+            ext = "mp3",
+        ),
+    )
+
+    val allAudioOptions: List<AudioOption> = defaultAudioOptions + ffmpegAudioOptions
+
+    fun findAudioOption(audioId: String?): AudioOption? =
+        allAudioOptions.find { it.id == audioId }
+
+    fun audioOptionsWithAddon(context: Context, base: List<AudioOption>, durationSec: Int = 0): List<AudioOption> {
+        if (base.isEmpty() || !FfmpegAddonManager.isInstalled(context)) return base
+        val existingIds = base.map { it.id }.toSet()
+        val extras = ffmpegAudioOptions
+            .filter { it.id !in existingIds }
+            .map { opt ->
+                val est = if (opt.bitrateKbps != null && durationSec > 0) {
+                    (durationSec.toLong() * opt.bitrateKbps.toLong() * 1000L) / 8L
+                } else {
+                    null
+                }
+                opt.copy(approxSizeBytes = est)
+            }
+        return base + extras
+    }
+
+    fun isWifiConnected(context: Context): Boolean {
+        val cm = context.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return true
+        val network = cm.activeNetwork ?: return false
+        val caps = cm.getNetworkCapabilities(network) ?: return false
+        return caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+    }
 
     private val imageExts = setOf("jpg", "jpeg", "png", "webp", "avif", "gif")
     private val videoContainers = setOf("mp4", "webm", "mov", "mkv", "m3u8")
@@ -296,7 +350,7 @@ object ZarditEngine {
         }
 
         val fallbackVideoSize = videoOptions.firstOrNull { it.approxSizeBytes != null }?.approxSizeBytes
-        val audioOptions = defaultAudioOptions.map { opt ->
+        val baseAudioOptions = defaultAudioOptions.map { opt ->
             val estimated = when {
                 opt.isOriginal -> bestAudioSize.takeIf { it > 0L }
                     ?: if (durationSec > 0) (durationSec.toLong() * 128_000L) / 8L
@@ -311,6 +365,7 @@ object ZarditEngine {
             }
             opt.copy(approxSizeBytes = estimated)
         }
+        val audioOptions = audioOptionsWithAddon(context, baseAudioOptions, durationSec)
 
         val platform = (info.extractorKey ?: info.extractor ?: "Web")
             .replace("Tab", "")
@@ -1789,7 +1844,11 @@ object ZarditEngine {
         imageFormat: ImageFormat = ImageFormat.ORIGINAL,
     ): String = when (mode) {
         DownloadMode.VIDEO -> if (videoHeight != null && videoHeight > 0) "${videoHeight}p" else "original"
-        DownloadMode.AUDIO -> if (audioOption?.isOriginal == true) "original" else "compact"
+        DownloadMode.AUDIO -> when {
+            audioOption?.requiresFfmpeg == true && audioOption.bitrateKbps != null -> "${audioOption.bitrateKbps}kbps"
+            audioOption?.isOriginal == true -> "original"
+            else -> "compact"
+        }
         DownloadMode.IMAGE -> imageFormat.id
     }
 
@@ -1799,7 +1858,7 @@ object ZarditEngine {
         imageFormat: ImageFormat = ImageFormat.ORIGINAL,
     ): String = when (mode) {
         DownloadMode.VIDEO -> "mp4"
-        DownloadMode.AUDIO -> "m4a"
+        DownloadMode.AUDIO -> audioOption?.ext ?: "m4a"
         DownloadMode.IMAGE -> imageFormat.ext
     }
 
@@ -1927,9 +1986,17 @@ object ZarditEngine {
 
             if (mode == DownloadMode.AUDIO && !directAudioUrl.isNullOrBlank()) {
                 onProgress(15f, "15% · Awakening Charizard…")
-                val outFile = File(workDir, "${safePrefix ?: "Audio"} [$qTag] [$mediaId].m4a")
-                downloadDirectHttp(directAudioUrl, outFile, 10f, 85f, onProgress)
-                return saveOutputFile(context, outFile, mode, treeUri)
+                val wantMp3 = audioOption?.requiresFfmpeg == true && FfmpegAddonManager.isInstalled(context)
+                val srcFile = File(workDir, "${safePrefix ?: "Audio"} [$qTag] [$mediaId].m4a")
+                downloadDirectHttp(directAudioUrl, srcFile, 10f, if (wantMp3) 70f else 85f, onProgress)
+                if (wantMp3) {
+                    onProgress(85f, "85% · Converting to MP3 (FFmpeg)…")
+                    val mp3Out = File(workDir, "${safePrefix ?: "Audio"} [$qTag] [$mediaId].mp3")
+                    if (FfmpegAddonManager.convertAudioToMp3(context, srcFile, mp3Out, audioOption?.bitrateKbps ?: 192)) {
+                        return saveOutputFile(context, mp3Out, mode, treeUri)
+                    }
+                }
+                return saveOutputFile(context, srcFile, mode, treeUri)
             }
 
             if (!directVideoUrl.isNullOrBlank() && mode == DownloadMode.VIDEO) {
@@ -1973,7 +2040,8 @@ object ZarditEngine {
             }
 
             if (mode == DownloadMode.AUDIO) {
-                val formatSpec = if (audioOption?.isOriginal == true) {
+                val wantMp3 = audioOption?.requiresFfmpeg == true && FfmpegAddonManager.isInstalled(context)
+                val formatSpec = if (audioOption?.isOriginal == true || wantMp3) {
                     "bestaudio[ext=m4a]/bestaudio"
                 } else {
                     "bestaudio[abr<=140][ext=m4a]/bestaudio[ext=m4a]/bestaudio"
@@ -1989,6 +2057,13 @@ object ZarditEngine {
                     ?.filter { it.isFile && !it.name.endsWith(".part") && !it.name.endsWith(".ytdl") }
                     ?.maxByOrNull { it.length() }
                     ?: error("Download finished, but no output file was found.")
+                if (wantMp3) {
+                    onProgress(88f, "88% · Converting to MP3 (FFmpeg)…")
+                    val mp3Out = File(workDir, "${outputFile.nameWithoutExtension}.mp3")
+                    if (FfmpegAddonManager.convertAudioToMp3(context, outputFile, mp3Out, audioOption?.bitrateKbps ?: 192)) {
+                        return saveOutputFile(context, mp3Out, mode, treeUri)
+                    }
+                }
                 return saveOutputFile(context, outputFile, mode, treeUri)
             }
 
@@ -2214,6 +2289,7 @@ object ZarditEngine {
                 fileName = sourceFile.name,
                 savedLocation = "$folderName/${sourceFile.name}",
                 contentUri = created.uri.toString(),
+                fileSizeBytes = sourceFile.length().takeIf { it > 0L },
             )
         }
 
@@ -2240,6 +2316,7 @@ object ZarditEngine {
                 fileName = sourceFile.name,
                 savedLocation = "Downloads/Zardit/${sourceFile.name}",
                 contentUri = uri.toString(),
+                fileSizeBytes = sourceFile.length().takeIf { it > 0L },
             )
         } else {
             @Suppress("DEPRECATION")
@@ -2253,8 +2330,82 @@ object ZarditEngine {
                 fileName = sourceFile.name,
                 savedLocation = "Downloads/Zardit/${sourceFile.name}",
                 contentUri = Uri.fromFile(dest).toString(),
+                fileSizeBytes = sourceFile.length().takeIf { it > 0L },
             )
         }
+    }
+
+    fun cacheHistoryThumbnail(
+        context: Context,
+        historyId: String,
+        thumbnailUrl: String?,
+    ): String? {
+        if (thumbnailUrl.isNullOrBlank() || !ZarditParser.isSafePublicUrl(thumbnailUrl)) return null
+        val safeName = historyId.replace(Regex("""[^A-Za-z0-9._-]"""), "_").take(80)
+        val outFile = File(HistoryStore.thumbnailsDir(context), "$safeName.jpg")
+        return runCatching {
+            val conn = (URL(thumbnailUrl).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 5000
+                readTimeout = 8000
+                instanceFollowRedirects = true
+                setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/125.0 Mobile Safari/537.36")
+                val lower = thumbnailUrl.lowercase(Locale.US)
+                if ("instagram" in lower || "cdninstagram" in lower) {
+                    setRequestProperty("Referer", "https://www.instagram.com/")
+                } else if ("facebook" in lower || "fbcdn" in lower) {
+                    setRequestProperty("Referer", "https://www.facebook.com/")
+                }
+            }
+            val raw = try {
+                val buf = ByteArray(16 * 1024)
+                val out = java.io.ByteArrayOutputStream()
+                var total = 0
+                conn.inputStream.use { input ->
+                    while (true) {
+                        val n = input.read(buf)
+                        if (n <= 0) break
+                        total += n
+                        if (total > 3 * 1024 * 1024) break
+                        out.write(buf, 0, n)
+                    }
+                }
+                out.toByteArray()
+            } finally {
+                conn.disconnect()
+            }
+            if (raw.isEmpty()) return null
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(raw, 0, raw.size, bounds)
+            val maxDim = maxOf(bounds.outWidth, bounds.outHeight).coerceAtLeast(1)
+            val sample = generateSequence(1) { it * 2 }
+                .takeWhile { (maxDim / it) > 480 }
+                .lastOrNull() ?: 1
+            val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+            val bmp = BitmapFactory.decodeByteArray(raw, 0, raw.size, opts) ?: return null
+            try {
+                val scale = minOf(320f / bmp.width.coerceAtLeast(1), 320f / bmp.height.coerceAtLeast(1), 1f)
+                val targetBmp = if (scale < 1f) {
+                    Bitmap.createScaledBitmap(
+                        bmp,
+                        (bmp.width * scale).toInt().coerceAtLeast(1),
+                        (bmp.height * scale).toInt().coerceAtLeast(1),
+                        true,
+                    )
+                } else {
+                    bmp
+                }
+                try {
+                    outFile.outputStream().use { stream ->
+                        targetBmp.compress(Bitmap.CompressFormat.JPEG, 82, stream)
+                    }
+                } finally {
+                    if (targetBmp !== bmp) targetBmp.recycle()
+                }
+            } finally {
+                bmp.recycle()
+            }
+            outFile.absolutePath.takeIf { outFile.isFile && outFile.length() > 0L }
+        }.getOrNull()
     }
 
     private fun qualityBadge(height: Int): String = ZarditParser.qualityBadge(height)

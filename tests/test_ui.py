@@ -200,6 +200,86 @@ class GuiInterfaceTests(unittest.TestCase):
             )
         self.assertEqual(len(history.load_history()), 3)
 
+    def test_history_thumbnails_recent_strip_and_cleanup(self):
+        from PySide6.QtCore import QBuffer, QIODevice
+        from PySide6.QtGui import QColor, QImage
+
+        img = QImage(32, 24, QImage.Format.Format_RGB32)
+        img.fill(QColor("#E63946"))
+        buf = QBuffer()
+        buf.open(QIODevice.OpenModeFlag.WriteOnly)
+        img.save(buf, "PNG")
+        png_bytes = bytes(buf.data())
+
+        media_dir = Path(self.temporary.name) / "media"
+        media_dir.mkdir(parents=True, exist_ok=True)
+        clip = media_dir / "ThumbClip [1080p] [t1].mp4"
+        clip.write_bytes(b"video")
+
+        entry = history.add_history_entry(
+            title="Thumb Clip",
+            file_path=clip,
+            kind="video",
+            quality="1080p MP4",
+            platform="YouTube",
+            thumbnail_bytes=png_bytes,
+        )
+        self.assertIsNotNone(entry)
+        thumb_path = Path(entry["thumbnail_path"])
+        self.assertTrue(thumb_path.is_file())
+
+        self.window.refresh_history()
+        self.assertFalse(self.window.recent_section.isHidden())
+        self.assertEqual(self.window.recent_rows_layout.count(), 1)
+        self.assertEqual(self.window.history_list.count(), 1)
+
+        history.remove_history_entry(entry["id"], delete_file=False)
+        self.assertFalse(thumb_path.exists())
+
+    def test_concurrent_playlist_and_parallel_stream_probing(self):
+        info = {
+            "id": "test",
+            "title": "Test",
+            "webpage_url": "https://www.youtube.com/watch?v=test",
+            "extractor": "youtube",
+            "formats": [
+                {"format_id": "248", "vcodec": "avc1", "acodec": "none", "width": 1920, "height": 1080, "ext": "mp4", "protocol": "https", "url": "https://cdn.example.com/1080.mp4"},
+                {"format_id": "136", "vcodec": "avc1", "acodec": "none", "width": 1280, "height": 720, "ext": "mp4", "protocol": "https", "url": "https://cdn.example.com/720.mp4"},
+                {"format_id": "140", "vcodec": "none", "acodec": "mp4a.40.2", "ext": "m4a", "protocol": "https", "url": "https://cdn.example.com/audio.m4a"},
+            ],
+        }
+        sizes = {
+            "https://cdn.example.com/1080.mp4": 2_000_000,
+            "https://cdn.example.com/720.mp4": 1_000_000,
+            "https://cdn.example.com/audio.m4a": 250_000,
+        }
+        with mock.patch.object(
+            downloader, "_probe_stream_size",
+            side_effect=lambda stream, _cache: sizes.get(stream.get("url")),
+        ) as probe_mock:
+            opts = downloader.video_format_options(info)
+            self.assertEqual([o.value for o in opts], [1080, 720])
+            self.assertEqual(opts[0].size, 2_250_000)
+            self.assertEqual(opts[1].size, 1_250_000)
+            self.assertEqual(probe_mock.call_count, 3)
+
+        out_dir = Path(self.temporary.name) / "pl_out"
+        entries = [
+            {"id": "v1", "title": "First"},
+            {"id": "v2", "title": "Second"},
+        ]
+
+        def fake_dl(entry_url, kind, setting, folder, pre_info, is_pl, reporter, cancel, video_id=None):
+            dest = folder / f"{video_id}.mp4"
+            dest.write_bytes(b"ok")
+            return downloader.DownloadResult("completed", folder, dest.name, dest)
+
+        with mock.patch.object(downloader, "get_output_directory", return_value=out_dir), \
+                mock.patch.object(downloader, "_download", side_effect=fake_dl):
+            res = downloader.download_playlist(entries, "video", 1080, "TestList", max_workers=2)
+            self.assertEqual(res.completed, 2)
+            self.assertEqual(len(res.completed_items), 2)
+
     def test_status_banner_visibility_and_diagnostics(self):
         self.window.show_status("Something failed", "error")
         self.assertFalse(self.window.status_banner.isHidden())
