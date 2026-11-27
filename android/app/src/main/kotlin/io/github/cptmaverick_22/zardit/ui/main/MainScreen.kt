@@ -107,6 +107,9 @@ fun MainScreen(
     val context = LocalContext.current
     var showIgLogin by remember { mutableStateOf(false) }
     var showIgDisconnect by remember { mutableStateOf(false) }
+    var showFbLogin by remember { mutableStateOf(false) }
+    var showFbDisconnect by remember { mutableStateOf(false) }
+    var showAccountsSheet by remember { mutableStateOf(false) }
     var showUpdatesSheet by remember { mutableStateOf(false) }
     var pendingDeleteItem by remember { mutableStateOf<HistoryItem?>(null) }
     var showClearAllConfirm by remember { mutableStateOf(false) }
@@ -186,22 +189,21 @@ fun MainScreen(
                 )
             }
 
+            val anyAccountConnected = ui.isInstagramConnected || ui.isFacebookConnected
             Surface(
                 shape = RoundedCornerShape(10.dp),
                 border = BorderStroke(
                     1.dp,
-                    if (ui.isInstagramConnected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                    if (anyAccountConnected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
                 ),
-                color = if (ui.isInstagramConnected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
-                modifier = Modifier.clickable {
-                    if (ui.isInstagramConnected) showIgDisconnect = true else showIgLogin = true
-                },
+                color = if (anyAccountConnected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
+                modifier = Modifier.clickable { showAccountsSheet = true },
             ) {
                 Text(
-                    text = if (ui.isInstagramConnected) "IG ✓" else "IG",
+                    text = if (anyAccountConnected) "IG/FB ✓" else "IG/FB",
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.SemiBold,
-                    color = if (ui.isInstagramConnected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
+                    color = if (anyAccountConnected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
                     softWrap = false,
                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
@@ -984,6 +986,85 @@ fun MainScreen(
         }
     }
 
+    if (showAccountsSheet) {
+        AlertDialog(
+            onDismissRequest = { showAccountsSheet = false },
+            title = { Text("Private Accounts") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = "Connect locally with AES-GCM encryption to download private reels, posts, and photos. Credentials stay strictly on your device.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Instagram", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                                Text(
+                                    text = if (ui.isInstagramConnected) "Connected ✓" else "Public posts only",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            if (ui.isInstagramConnected) {
+                                OutlinedButton(onClick = { showAccountsSheet = false; showIgDisconnect = true }) {
+                                    Text("Disconnect")
+                                }
+                            } else {
+                                Button(onClick = { showAccountsSheet = false; showIgLogin = true }) {
+                                    Text("Connect")
+                                }
+                            }
+                        }
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Facebook", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                                Text(
+                                    text = if (ui.isFacebookConnected) "Connected ✓" else "Public posts only",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            if (ui.isFacebookConnected) {
+                                OutlinedButton(onClick = { showAccountsSheet = false; showFbDisconnect = true }) {
+                                    Text("Disconnect")
+                                }
+                            } else {
+                                Button(onClick = { showAccountsSheet = false; showFbLogin = true }) {
+                                    Text("Connect")
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showAccountsSheet = false }) { Text("Close") }
+            },
+        )
+    }
+
     if (showIgLogin) {
         InstagramLoginDialog(
             onConnected = {
@@ -991,6 +1072,16 @@ fun MainScreen(
                 viewModel.onInstagramConnected()
             },
             onDismiss = { showIgLogin = false },
+        )
+    }
+
+    if (showFbLogin) {
+        FacebookLoginDialog(
+            onConnected = {
+                showFbLogin = false
+                viewModel.onFacebookConnected()
+            },
+            onDismiss = { showFbLogin = false },
         )
     }
 
@@ -1014,6 +1105,32 @@ fun MainScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showIgDisconnect = false }) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
+
+    if (showFbDisconnect) {
+        AlertDialog(
+            onDismissRequest = { showFbDisconnect = false },
+            title = { Text("Disconnect Facebook?") },
+            text = {
+                Text("This will permanently wipe your locally encrypted Facebook session and cookies from this device.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showFbDisconnect = false
+                        viewModel.disconnectFacebook()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                ) {
+                    Text("Disconnect")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showFbDisconnect = false }) {
                     Text("Cancel")
                 }
             },

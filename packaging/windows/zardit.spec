@@ -29,6 +29,7 @@ a = Analysis(
         "zardit_core",
         "zardit_core.app_updater",
         "zardit_core.errors",
+        "zardit_core.facebook",
         "zardit_core.formats",
         "zardit_core.instagram",
         "zardit_core.naming",

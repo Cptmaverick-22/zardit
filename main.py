@@ -772,7 +772,7 @@ def show_menu():
         ("4", "Download Location", "Change output folder"),
         ("5", "Updates", "Zardit app & yt-dlp engine"),
         ("H", "Download History", history_desc),
-        ("G", "Instagram Access", "Private IG cookies or source"),
+        ("G", "IG / FB Access", "Private IG/FB cookies or source"),
         ("T", "Switch Theme", f"Current: {theme_summary()}"),
         ("6", "Exit", "Quit application"),
     ]
@@ -1087,9 +1087,9 @@ def _handle_single_info(kind, url, info):
 
 
 def configure_instagram_access():
-    """Configure local browser cookies or extract a private IG post offline."""
+    """Configure local browser cookies or extract a private IG/FB post offline."""
 
-    print_section("Private Instagram Access")
+    print_section("Private Instagram & Facebook Access")
     current = get_ig_browser()
     print_line(
         f"[muted]Current browser cookies:[/] [heading]{escape(IG_BROWSER_LABELS.get(current, 'Off (Public posts only)'))}[/]"

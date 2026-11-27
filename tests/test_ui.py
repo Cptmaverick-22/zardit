@@ -785,10 +785,10 @@ class GuiInterfaceTests(unittest.TestCase):
             {},
         )
         self.window.refresh_ig_button()
-        self.assertEqual(self.window.ig_button.text(), "IG · Firefox")
+        self.assertEqual(self.window.ig_button.text(), "IG / FB · Firefox")
         config.save_ig_browser(None)
         self.window.refresh_ig_button()
-        self.assertEqual(self.window.ig_button.text(), "IG")
+        self.assertEqual(self.window.ig_button.text(), "IG / FB")
 
         # 2. Offline JSON (?__a=1) 1080p DASH + carousel extraction
         import json as _json
@@ -855,7 +855,7 @@ class GuiInterfaceTests(unittest.TestCase):
 
         # 5. Friendly Instagram guidance (when IG is Off vs Connected)
         msg_off = downloader.friendly_error("ERROR: [Instagram] XYZ: This content is only available for registered users")
-        self.assertIn("Click IG", msg_off)
+        self.assertIn("Click IG / FB", msg_off)
         config.save_ig_browser("firefox")
         msg_on = downloader.friendly_error("ERROR: [Instagram] XYZ: empty media response")
         self.assertIn("Paste Page Source", msg_on)

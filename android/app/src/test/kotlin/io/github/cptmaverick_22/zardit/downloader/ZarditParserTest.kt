@@ -145,4 +145,36 @@ class ZarditParserTest {
         )
         assertTrue(ZarditParser.extractMinimalInstagramCookies("csrftoken=only_csrf").isEmpty())
     }
+
+    @Test
+    fun extractMinimalFacebookCookies_andParseFacebookHtml_handlePhotosAndReels() {
+        val fbMap = ZarditParser.extractMinimalFacebookCookies("c_user=12345; xs=secret_xs; datr=d1; noise=x")
+        assertEquals(mapOf("c_user" to "12345", "xs" to "secret_xs", "datr" to "d1"), fbMap)
+        assertTrue(ZarditParser.extractMinimalFacebookCookies("c_user=12345; datr=only").isEmpty())
+
+        val fbPhotoHtml = """
+            <html><head><title>Mountain Sunset</title></head><body>
+            {"profile_picture":{"uri":"https:\/\/scontent.xx.fbcdn.net\/v\/t39.30808-1\/av.jpg"}}
+            {"image":{"uri":"https:\/\/scontent.xx.fbcdn.net\/v\/t51.82787-15\/929416835_n.webp?oh=1"}}
+            </body></html>
+        """.trimIndent()
+        val parsedPhoto = ZarditParser.parseFacebookHtml(
+            fbPhotoHtml,
+            "https://www.facebook.com/photo/?fbid=2986017488440647",
+        )
+        assertNotNull(parsedPhoto)
+        assertEquals(1, parsedPhoto!!.imageUrls.size)
+        assertTrue(parsedPhoto.imageUrls[0].contains("929416835_n.webp"))
+
+        val fbReelHtml = """
+            <html><head><meta property="og:title" content="Private Reel"></head><body>
+            {"browser_native_hd_url":"https:\/\/video.xx.fbcdn.net\/hd.mp4?oh=1",
+             "browser_native_sd_url":"https:\/\/video.xx.fbcdn.net\/sd.mp4?oh=2"}
+            </body></html>
+        """.trimIndent()
+        val parsedReel = ZarditParser.parseFacebookHtml(fbReelHtml, "https://www.facebook.com/reel/987654")
+        assertNotNull(parsedReel)
+        assertEquals(listOf(720, 480), parsedReel!!.videoOptions.map { it.height })
+        assertEquals("https://video.xx.fbcdn.net/hd.mp4?oh=1", parsedReel.directVideoUrl)
+    }
 }

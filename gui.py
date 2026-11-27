@@ -1184,11 +1184,11 @@ class UpdatesDialog(QDialog):
 
 
 class InstagramAccessDialog(QDialog):
-    """Configure local browser cookies or extract offline from private IG source."""
+    """Configure local browser cookies or extract offline from private IG/FB source."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Private Instagram Access")
+        self.setWindowTitle("Private Instagram & Facebook Access")
         self.resize(580, 560)
         icon = load_app_icon()
         if not icon.isNull():
@@ -1212,8 +1212,8 @@ class InstagramAccessDialog(QDialog):
         b_title = QLabel("Option 1 · Use Signed-In Browser Cookies (Automatic)")
         b_title.setObjectName("sectionTitle")
         b_hint = plain_label(
-            "Reads your existing Instagram session directly from a browser on this "
-            "PC (never uploaded anywhere). Tip: Firefox works on all OSes; Chrome/"
+            "Reads your existing Instagram & Facebook sessions directly from a browser "
+            "on this PC (never uploaded anywhere). Tip: Firefox works on all OSes; Chrome/"
             "Edge on Windows v130+ encrypts local cookies — use Option 2 if locked.",
             object_name="mutedText",
         )
@@ -1259,14 +1259,14 @@ class InstagramAccessDialog(QDialog):
         s_title = QLabel("Option 2 · Paste Page Source / JSON (100% Offline)")
         s_title.setObjectName("sectionTitle")
         s_steps = plain_label(
-            "1. Open your private Reel/post in your logged-in browser.\n"
-            "2. Press Ctrl+U (View Page Source) or append ?__a=1&__d=dis, then Ctrl+A -> Ctrl+C.\n"
+            "1. Open the private Instagram or Facebook post/reel in your logged-in browser.\n"
+            "2. Press Ctrl+U (View Page Source) or append ?__a=1&__d=dis (IG), then Ctrl+A -> Ctrl+C.\n"
             "3. Paste below — extracted completely offline on your PC.",
             object_name="mutedText",
         )
         self.source_url_input = QLineEdit()
         self.source_url_input.setPlaceholderText(
-            "Optional: post link (https://www.instagram.com/reel/…)"
+            "Optional: post link (https://www.instagram.com/… or https://www.facebook.com/…)"
         )
         self.source_text = QPlainTextEdit()
         self.source_text.setPlaceholderText(
@@ -1571,10 +1571,10 @@ class MainWindow(QWidget):
             theme_layout.addWidget(btn)
             self.theme_buttons[mode] = btn
 
-        self.ig_button = QPushButton("IG")
+        self.ig_button = QPushButton("IG / FB")
         self.ig_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.ig_button.setToolTip(
-            "Configure private Instagram browser cookies or extract offline from page source"
+            "Configure private Instagram & Facebook browser cookies or extract offline from page source"
         )
         self.ig_button.clicked.connect(self.open_instagram_access)
         self.refresh_ig_button()
@@ -3474,10 +3474,10 @@ class MainWindow(QWidget):
     def refresh_ig_button(self):
         browser = get_ig_browser()
         if browser:
-            self.ig_button.setText(f"IG · {browser.title()}")
+            self.ig_button.setText(f"IG / FB · {browser.title()}")
             self.ig_button.setObjectName("accentSoftBtn")
         else:
-            self.ig_button.setText("IG")
+            self.ig_button.setText("IG / FB")
             self.ig_button.setObjectName("secondaryBtn")
         repolish(self.ig_button)
 
@@ -3492,7 +3492,7 @@ class MainWindow(QWidget):
             self.url = dlg.parsed_url
             self.url_input.setText(self.url)
             self.failed_items = []
-            self.show_status("Preparing extracted Instagram media…")
+            self.show_status("Preparing extracted media…")
             self.set_state("fetching")
             task = self.start_task(
                 lambda _thread: _package_single_or_carousel(parsed_info)

@@ -125,24 +125,59 @@ def friendly_error(error, ig_browser_lookup=None):
             "IG -> Paste Page Source (offline)."
         )
 
-    is_ig_auth = any(
-        tok in low_msg
-        for tok in (
-            "instagram",
-            "registered users",
-            "empty media response",
+    is_fb_auth = (
+        ("facebook" in low_msg or "pfbid" in low_msg)
+        and any(
+            tok in low_msg
+            for tok in (
+                "login",
+                "log in",
+                "sign in",
+                "registered users",
+                "cookies",
+                "private",
+                "no video found",
+                "http error 404",
+                "http error 400",
+                "cannot parse",
+            )
         )
-    ) and any(
-        tok in low_msg
-        for tok in (
-            "login",
-            "sign in",
-            "log in",
-            "registered users",
-            "empty media response",
-            "not granting access",
-            "cookies",
-            "private",
+    )
+    if is_fb_auth:
+        lookup = ig_browser_lookup or get_ig_browser
+        if lookup():
+            return (
+                "Facebook refused access or could not extract this private post with "
+                "your browser cookies. Try IG / FB -> Paste Page Source (offline)."
+            )
+        return (
+            "This Facebook post or reel may be private or restricted. Click IG / FB in the "
+            "top bar (or choose [G] in the CLI) to connect a browser or paste the "
+            "Page Source offline."
+        )
+
+    is_ig_auth = (
+        "facebook" not in low_msg
+        and any(
+            tok in low_msg
+            for tok in (
+                "instagram",
+                "registered users",
+                "empty media response",
+            )
+        )
+        and any(
+            tok in low_msg
+            for tok in (
+                "login",
+                "sign in",
+                "log in",
+                "registered users",
+                "empty media response",
+                "not granting access",
+                "cookies",
+                "private",
+            )
         )
     )
     if is_ig_auth:
@@ -151,10 +186,10 @@ def friendly_error(error, ig_browser_lookup=None):
             return (
                 "Instagram refused access with the connected browser cookies. "
                 "Make sure you're logged into an account that follows this profile, "
-                "or click IG -> Paste Page Source (offline)."
+                "or click IG / FB -> Paste Page Source (offline)."
             )
         return (
-            "This Instagram post is private or requires sign-in. Click IG in the "
+            "This Instagram post is private or requires sign-in. Click IG / FB in the "
             "top bar (or choose [G] in the CLI) to connect a browser or paste the "
             "Page Source offline."
         )

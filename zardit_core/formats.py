@@ -40,7 +40,8 @@ _OG_TAG_RE = re.compile(
 def resolution_label(video_format):
     """The resolution a source calls a format, such as 1080 for '1080p60'."""
 
-    match = NOTE_PATTERN.match(video_format.get("format_note") or "")
+    note = video_format.get("format_note") or ""
+    match = NOTE_PATTERN.match(note)
     if match:
         return int(match.group(1))
 
@@ -49,7 +50,19 @@ def resolution_label(video_format):
     if height and width:
         return min(height, width)
 
-    return height or None
+    if height:
+        return height
+
+    ext = (video_format.get("ext") or "").lower()
+    if ext in ("mp4", "webm", "mov", "mkv"):
+        fmt_id = (video_format.get("format_id") or "").lower()
+        note_low = note.lower()
+        if fmt_id in ("hd", "dash_hd") or re.search(r"\bhd\b", note_low):
+            return 720
+        if fmt_id in ("sd", "dash_sd") or re.search(r"\bsd\b", note_low):
+            return 480
+
+    return None
 
 
 def _image_ext_from_url(url):

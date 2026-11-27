@@ -27,6 +27,7 @@ object DiagnosticLog {
     fun buildReport(context: Context): String {
         val engineVer = runCatching { YoutubeDL.getInstance().version(context) }.getOrNull() ?: "unknown"
         val igConnected = InstagramAuth.hasSession(context)
+        val fbConnected = FacebookAuth.hasSession(context)
         val abis = Build.SUPPORTED_ABIS.joinToString(", ")
         val shortCommit = BuildConfig.GIT_COMMIT.take(7).ifBlank { "" }
         val appLine = if (shortCommit.isNotEmpty()) {
@@ -40,7 +41,7 @@ object DiagnosticLog {
             appendLine("Device: ${Build.MANUFACTURER} ${Build.MODEL} (Android ${Build.VERSION.RELEASE}, SDK ${Build.VERSION.SDK_INT})")
             appendLine("ABIs: $abis")
             appendLine("Engine: $engineVer")
-            appendLine("IG Connected: $igConnected")
+            appendLine("IG Connected: $igConnected | FB Connected: $fbConnected")
             appendLine("--- Recent Log ---")
             if (lines.isEmpty()) {
                 appendLine("(no entries yet)")
@@ -51,6 +52,6 @@ object DiagnosticLog {
     }
 
     private fun redact(text: String): String = text
-        .replace(Regex("""(sessionid|csrftoken|ds_user_id)=[^;\s]+""", RegexOption.IGNORE_CASE), "$1=<redacted>")
+        .replace(Regex("""(sessionid|csrftoken|ds_user_id|c_user|xs|datr|sb)=[^;\s]+""", RegexOption.IGNORE_CASE), "$1=<redacted>")
         .replace(Regex("""([?&](?:igsh|ig_rid|xmt|slof)=)[^&\s]+""", RegexOption.IGNORE_CASE), "$1<redacted>")
 }

@@ -19,6 +19,7 @@ import androidx.documentfile.provider.DocumentFile
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
 import io.github.cptmaverick_22.zardit.data.DiagnosticLog
+import io.github.cptmaverick_22.zardit.data.FacebookAuth
 import io.github.cptmaverick_22.zardit.data.InstagramAuth
 import java.io.File
 import java.net.HttpURLConnection
@@ -37,7 +38,8 @@ object ZarditEngine {
         AudioOption("compact_m4a", "Compact Audio", "M4A · Smaller file", 128, isOriginal = false),
     )
 
-    private val imageExts = setOf("jpg", "jpeg", "png", "webp")
+    private val imageExts = setOf("jpg", "jpeg", "png", "webp", "avif", "gif")
+    private val videoContainers = setOf("mp4", "webm", "mov", "mkv", "m3u8")
     private val croppedUrlRegex = Regex(
         """(?:/[sp]\d+x\d+/|/c\d+\.\d+\.\d+\.\d+|dst-jpg_e\d+_[sp]|sqp=|profile_pic)""",
         RegexOption.IGNORE_CASE,
@@ -66,13 +68,29 @@ object ZarditEngine {
         } catch (t: Throwable) {
             val msg = t.message.orEmpty()
             DiagnosticLog.log("getInfoError", msg)
-            val isIg = detectPlatformName(cleanUrl) == "Instagram"
-            val isThreads = detectPlatformName(cleanUrl) == "Threads"
+            val platform = detectPlatformName(cleanUrl)
+            val isIg = platform == "Instagram"
+            val isFb = platform == "Facebook"
+            val isThreads = platform == "Threads"
             val isNoVideo = msg.contains("No video formats found", ignoreCase = true) ||
-                msg.contains("no video in this post", ignoreCase = true)
+                msg.contains("no video in this post", ignoreCase = true) ||
+                msg.contains("No video found", ignoreCase = true) ||
+                msg.contains("HTTP Error 404", ignoreCase = true) ||
+                msg.contains("HTTP Error 400", ignoreCase = true)
 
             if (isThreads) {
                 fetchWebMetaFallback(cleanUrl)?.let { return it }
+            }
+
+            if (isFb) {
+                val hasFb = FacebookAuth.hasSession(context)
+                if (hasFb && !isNoVideo) {
+                    fetchWithFacebookCookies(context, cleanUrl)?.let { return it }
+                }
+                fetchFacebookHtmlFallback(context, cleanUrl, useFbCookies = hasFb)?.let { return it }
+                if (hasFb) {
+                    fetchWithFacebookCookies(context, cleanUrl)?.let { return it }
+                }
             }
 
             if (isIg) {
@@ -92,7 +110,7 @@ object ZarditEngine {
                     fetchImageFallback(context, cleanUrl, useIgCookies = false)?.let { return it }
                 }
                 fetchInstagramEmbedFallback(cleanUrl)?.let { return it }
-            } else if (isNoVideo) {
+            } else if (!isFb && isNoVideo) {
                 fetchImageFallback(context, cleanUrl, useIgCookies = false)?.let { return it }
             }
 
@@ -100,7 +118,7 @@ object ZarditEngine {
                 fetchWebMetaFallback(cleanUrl)?.let { return it }
             }
 
-            throw IllegalStateException(friendlyError(msg, isIg))
+            throw IllegalStateException(friendlyError(msg, isInstagram = isIg, isFacebook = isFb))
         }
 
         val formats = info.formats.orEmpty()
@@ -201,8 +219,15 @@ object ZarditEngine {
                 }
             }
 
+        val hasAnyVideoFormat = formats.any { f ->
+            val fExt = (f.ext ?: "").lowercase(Locale.US)
+            val vc = f.vcodec
+            val nl = (f.formatNote ?: "").lowercase(Locale.US)
+            fExt !in imageExts && fExt != "mhtml" && vc != "none" && vc != "images" &&
+                "storyboard" !in nl && ((!vc.isNullOrBlank()) || f.height > 0 || f.width > 0 || fExt in videoContainers)
+        }
         val isPureImage = (info.ext?.lowercase(Locale.US) in imageExts) ||
-            (videoOptions.isEmpty() && formats.none { it.vcodec != "none" && it.vcodec != null && it.ext != "mhtml" })
+            (videoOptions.isEmpty() && !hasAnyVideoFormat)
 
         val imageUrls = buildList {
             if (isPureImage && !info.url.isNullOrBlank() && info.url!!.startsWith("http")) {
@@ -214,28 +239,60 @@ object ZarditEngine {
         }
 
         if (videoOptions.isEmpty() && !isPureImage) {
-            // Pre-muxed MP4 fallback (e.g. Instagram/Facebook formats with width=None, height=None like format "1")
-            val preMuxed = formats.firstOrNull { f ->
-                (f.ext ?: "").equals("mp4", ignoreCase = true) &&
-                    f.vcodec.isNullOrBlank() && f.acodec.isNullOrBlank() &&
+            // Pre-muxed MP4 fallback (e.g. Facebook sd/hd or Instagram formats with width=None, height=None)
+            val candidates = formats.filter { f ->
+                (f.ext ?: "").lowercase(Locale.US) in videoContainers &&
+                    f.vcodec != "none" &&
                     !f.url.isNullOrBlank()
-            } ?: formats.lastOrNull { f ->
-                (f.ext ?: "").equals("mp4", ignoreCase = true) && !f.url.isNullOrBlank()
             }
-            val probeTarget = preMuxed?.url?.takeIf { it.startsWith("http") }
-                ?: info.url?.takeIf { it.startsWith("http") }
-            val fallbackSize = probeTarget?.let { probeUrlSize(it) }
-            videoOptions = listOf(
-                VideoOption(
-                    height = 0,
-                    label = "Original",
-                    badge = "MP4",
-                    codecHint = "MP4 · H.264 + AAC",
-                    approxSizeBytes = fallbackSize,
-                    formatId = preMuxed?.formatId?.takeIf { it.isNotBlank() },
-                    needsAudioMux = false,
-                ),
-            )
+            val seenTiers = mutableSetOf<Int>()
+            val parsedFallbacks = buildList<VideoOption> {
+                for (f in candidates.reversed()) {
+                    val fidLow = (f.formatId ?: "").lowercase(Locale.US)
+                    val noteLow = (f.formatNote ?: "").lowercase(Locale.US)
+                    val tier = when {
+                        fidLow in setOf("hd", "dash_hd") || "hd" in noteLow -> 720
+                        fidLow in setOf("sd", "dash_sd") || "sd" in noteLow -> 480
+                        else -> 0
+                    }
+                    if (!seenTiers.add(tier)) continue
+                    val probeTarget = f.url?.takeIf { it.startsWith("http") }
+                    val size = f.fileSize.takeIf { it > 0L }
+                        ?: f.fileSizeApproximate.takeIf { it > 0L }
+                        ?: probeTarget?.let { probeUrlSize(it) }
+                    val label = if (tier > 0) "${tier}p" else "Original"
+                    val badge = if (tier > 0) qualityBadge(tier).ifEmpty { "MP4" } else "MP4"
+                    add(
+                        VideoOption(
+                            height = tier,
+                            label = label,
+                            badge = badge,
+                            codecHint = "MP4 · H.264 + AAC",
+                            approxSizeBytes = size,
+                            formatId = f.formatId?.takeIf { it.isNotBlank() },
+                            needsAudioMux = false,
+                        ),
+                    )
+                }
+            }.sortedByDescending { it.height }
+
+            if (parsedFallbacks.isNotEmpty()) {
+                videoOptions = parsedFallbacks
+            } else {
+                val probeTarget = info.url?.takeIf { it.startsWith("http") }
+                val fallbackSize = probeTarget?.let { probeUrlSize(it) }
+                videoOptions = listOf(
+                    VideoOption(
+                        height = 0,
+                        label = "Original",
+                        badge = "MP4",
+                        codecHint = "MP4 · H.264 + AAC",
+                        approxSizeBytes = fallbackSize,
+                        formatId = null,
+                        needsAudioMux = false,
+                    ),
+                )
+            }
         }
 
         val fallbackVideoSize = videoOptions.firstOrNull { it.approxSizeBytes != null }?.approxSizeBytes
@@ -289,10 +346,16 @@ object ZarditEngine {
         val lower = current.lowercase(Locale.US)
         val isThreadsShare = ("threads.com" in lower || "threads.net" in lower) && "/share/" in lower
         val isIgShare = ("instagram.com" in lower || "instagr.am" in lower) && "/share/" in lower
-        if (isThreadsShare || isIgShare) {
+        val isFbShare = ("facebook.com" in lower || "fb.watch" in lower || "fb.com" in lower) && "/share/" in lower
+        if (isThreadsShare || isIgShare || isFbShare) {
             runCatching {
                 val igCookie = if (isIgShare && context != null && InstagramAuth.hasSession(context)) {
                     InstagramAuth.getCookieHeader(context)
+                } else {
+                    null
+                }
+                val fbCookie = if (isFbShare && context != null && FacebookAuth.hasSession(context)) {
+                    FacebookAuth.getCookieHeader(context)
                 } else {
                     null
                 }
@@ -307,8 +370,11 @@ object ZarditEngine {
                         readTimeout = 5000
                         setRequestProperty("User-Agent", "curl/8.5.0")
                         setRequestProperty("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-                        if (igCookie != null && hopUrl.host.lowercase(Locale.US).endsWith("instagram.com")) {
+                        val hLow = hopUrl.host.lowercase(Locale.US)
+                        if (igCookie != null && hLow.endsWith("instagram.com")) {
                             setRequestProperty("Cookie", igCookie)
+                        } else if (fbCookie != null && hLow.endsWith("facebook.com")) {
+                            setRequestProperty("Cookie", fbCookie)
                         }
                     }
                     val code = conn.responseCode
@@ -1406,17 +1472,200 @@ object ZarditEngine {
         return firstImageFallback
     }
 
+    private fun fetchWithFacebookCookies(context: Context, url: String): MediaPreview? = runCatching {
+        val jsonStr = FacebookAuth.withTempCookieFile(context) { cookieFile ->
+            val req = YoutubeDLRequest(url).apply {
+                addOption("--dump-single-json")
+                addOption("--no-playlist")
+                addOption("--ignore-no-formats-error")
+                addOption("--cookies", cookieFile.absolutePath)
+            }
+            YoutubeDL.getInstance().execute(req, null, null).out
+        }
+        if (jsonStr.isBlank()) return@runCatching null
+        val json = JSONObject(jsonStr)
+        val formatsArr = json.optJSONArray("formats")
+        val durationSec = json.optInt("duration", 0)
+        val rawTitle = decodeHtml(json.optString("title").ifBlank { "Facebook Video" })
+        val id = json.optString("id").ifBlank { url.hashCode().toString() }
+        val uploader = decodeHtml(json.optString("uploader").ifBlank { "Facebook" })
+        val thumb = bestUncroppedImageFromJson(json)
+
+        var bestAudioSize = 0L
+        val videoOpts = buildList {
+            val buckets = listOf(1440, 1080, 720, 480, 360)
+            val bestByBucket = mutableMapOf<Int, VideoOption>()
+            if (formatsArr != null) {
+                for (i in 0 until formatsArr.length()) {
+                    val f = formatsArr.optJSONObject(i) ?: continue
+                    if (f.optString("vcodec") == "none" && f.optString("acodec") != "none") {
+                        val s = f.optLong("filesize", 0L).takeIf { it > 0L }
+                            ?: f.optLong("filesize_approx", 0L).takeIf { it > 0L }
+                            ?: f.optString("url").takeIf { it.startsWith("http") }?.let { probeUrlSize(it) }
+                            ?: 0L
+                        if (s > bestAudioSize) bestAudioSize = s
+                    }
+                }
+                for (i in 0 until formatsArr.length()) {
+                    val f = formatsArr.optJSONObject(i) ?: continue
+                    val ext = f.optString("ext").lowercase(Locale.US)
+                    val vc = f.optString("vcodec")
+                    if (ext in imageExts || ext == "mhtml" || vc == "none" || vc == "images") continue
+                    if (ext !in videoContainers && vc.isBlank()) continue
+                    val note = f.optString("format_note")
+                    val fid = f.optString("format_id")
+                    val fidLow = fid.lowercase(Locale.US)
+                    val tier = classifyVideoTier(f.optInt("width", 0), f.optInt("height", 0), note, buckets)
+                        ?: when {
+                            fidLow in setOf("hd", "dash_hd") || "hd" in note.lowercase(Locale.US) -> 720
+                            fidLow in setOf("sd", "dash_sd") || "sd" in note.lowercase(Locale.US) -> 480
+                            else -> 0
+                        }
+                    val needsMux = f.optString("acodec") == "none"
+                    val fmtUrl = f.optString("url").takeIf { it.startsWith("http") }
+                    val rawSize = f.optLong("filesize", 0L).takeIf { it > 0L }
+                        ?: f.optLong("filesize_approx", 0L).takeIf { it > 0L }
+                        ?: fmtUrl?.let { probeUrlSize(it) }
+                    val totalSize = rawSize?.let { it + (if (needsMux) bestAudioSize else 0L) }
+                    val label = if (tier > 0) "${tier}p" else "Original"
+                    val badge = if (tier > 0) qualityBadge(tier).ifEmpty { "MP4" } else "MP4"
+                    bestByBucket.putIfAbsent(
+                        tier,
+                        VideoOption(tier, label, badge, "MP4 · Facebook", totalSize, formatId = fid.ifBlank { null }, needsAudioMux = needsMux),
+                    )
+                }
+            }
+            addAll(bestByBucket.values.sortedByDescending { it.height })
+        }
+        if (videoOpts.isEmpty()) return@runCatching null
+
+        MediaPreview(
+            mediaId = id,
+            url = url,
+            title = rawTitle,
+            author = uploader,
+            platform = "FACEBOOK · VIDEO",
+            durationText = formatDuration(durationSec),
+            thumbnailUrl = thumb,
+            videoOptions = videoOpts,
+            audioOptions = defaultAudioOptions.map { opt ->
+                val est = if (durationSec > 0) (durationSec.toLong() * (opt.bitrateKbps ?: 128).toLong() * 1000L) / 8L else null
+                opt.copy(approxSizeBytes = est)
+            },
+            imageUrls = listOfNotNull(thumb),
+            usedInstagramAuth = true,
+            sanitizedTitle = sanitizeTitle(rawTitle, "Facebook_$id"),
+        )
+    }.getOrNull()
+
+    private fun fetchFacebookHtmlFallback(context: Context, url: String, useFbCookies: Boolean): MediaPreview? {
+        val cookieHeader = if (useFbCookies) FacebookAuth.getCookieHeader(context) else null
+        val profiles = buildList {
+            if (cookieHeader != null) {
+                add("Mozilla/5.0 (X11; Linux x86_64; rv:132.0) Gecko/20100101 Firefox/132.0" to cookieHeader)
+                add("Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/125.0 Mobile Safari/537.36" to cookieHeader)
+            }
+            add("Mozilla/5.0 (X11; Linux x86_64; rv:132.0) Gecko/20100101 Firefox/132.0" to null)
+            add("curl/8.5.0" to null)
+            add("facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)" to null)
+        }
+
+        val prevCookieHandler = java.net.CookieHandler.getDefault()
+        val tempCookieManager = java.net.CookieManager(null, java.net.CookiePolicy.ACCEPT_ORIGINAL_SERVER)
+        try {
+            java.net.CookieHandler.setDefault(tempCookieManager)
+            for ((ua, ck) in profiles) {
+                val parsed = runCatching {
+                    val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                        connectTimeout = 9000
+                        readTimeout = 9000
+                        instanceFollowRedirects = true
+                        setRequestProperty("User-Agent", ua)
+                        setRequestProperty("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                        setRequestProperty("Accept-Language", "en-US,en;q=0.9")
+                        if (ua.contains("Firefox") || ua.contains("Chrome")) {
+                            setRequestProperty("Sec-Fetch-Mode", "navigate")
+                        }
+                        if (ck != null) {
+                            setRequestProperty("Cookie", ck)
+                        }
+                    }
+                    val finalUrl = conn.url?.toString() ?: url
+                    if (!ZarditParser.isSafePublicUrl(finalUrl)) {
+                        conn.disconnect()
+                        return@runCatching null
+                    }
+                    val body = conn.inputStream.bufferedReader().use { it.readText().take(4 * 1024 * 1024) }
+                    conn.disconnect()
+                    DiagnosticLog.log("FBHtml", "ua=${ua.take(12)} auth=${ck != null} len=${body.length}")
+                    ZarditParser.parseFacebookHtml(body, finalUrl)
+                }.onFailure { err ->
+                    DiagnosticLog.log("FBHtmlErr", err.message ?: err::class.java.simpleName)
+                }.getOrNull() ?: continue
+
+                if (parsed.videoOptions.isNotEmpty() && parsed.directVideoUrl != null) {
+                    val size = parsed.videoOptions.firstOrNull()?.approxSizeBytes ?: probeUrlSize(parsed.directVideoUrl)
+                    val opts = parsed.videoOptions.mapIndexed { i, opt ->
+                        if (i == 0 && opt.approxSizeBytes == null) opt.copy(approxSizeBytes = size) else opt
+                    }
+                    return MediaPreview(
+                        mediaId = parsed.mediaId,
+                        url = url,
+                        title = parsed.title,
+                        author = parsed.author,
+                        platform = "FACEBOOK · VIDEO",
+                        durationText = "",
+                        thumbnailUrl = parsed.thumbnailUrl,
+                        videoOptions = opts,
+                        audioOptions = if (parsed.directAudioUrl != null) {
+                            listOf(AudioOption("orig_m4a", "Best Audio", "M4A / AAC · Native quality", null, isOriginal = true, approxSizeBytes = parsed.audioBytes))
+                        } else {
+                            defaultAudioOptions.map { it.copy(approxSizeBytes = size?.let { s -> (s / 5L).coerceAtLeast(80_000L) }) }
+                        },
+                        directVideoUrl = parsed.directVideoUrl,
+                        directAudioUrl = parsed.directAudioUrl,
+                        imageUrls = parsed.imageUrls,
+                        usedInstagramAuth = useFbCookies,
+                        sanitizedTitle = sanitizeTitle(parsed.title, "Facebook_${parsed.mediaId}"),
+                    )
+                }
+
+                if (parsed.imageUrls.isNotEmpty()) {
+                    return MediaPreview(
+                        mediaId = parsed.mediaId,
+                        url = url,
+                        title = parsed.title,
+                        author = "${parsed.author} · ${parsed.imageUrls.size} image${if (parsed.imageUrls.size == 1) "" else "s"}",
+                        platform = "FACEBOOK · IMAGE",
+                        durationText = "${parsed.imageUrls.size} image${if (parsed.imageUrls.size == 1) "" else "s"}",
+                        thumbnailUrl = parsed.imageUrls.first(),
+                        videoOptions = emptyList(),
+                        audioOptions = emptyList(),
+                        imageUrls = parsed.imageUrls,
+                        usedInstagramAuth = useFbCookies,
+                        sanitizedTitle = sanitizeTitle(parsed.title, "Facebook_${parsed.mediaId}"),
+                    )
+                }
+            }
+            return null
+        } finally {
+            java.net.CookieHandler.setDefault(prevCookieHandler)
+            tempCookieManager.cookieStore.removeAll()
+        }
+    }
+
     private fun detectPlatformName(url: String): String =
         ZarditParser.detectPlatformName(url)
 
-    private fun friendlyError(raw: String, isInstagram: Boolean = false): String {
+    private fun friendlyError(raw: String, isInstagram: Boolean = false, isFacebook: Boolean = false): String {
         val lower = raw.lowercase(Locale.US)
         return when {
-            "empty media response" in lower || "login" in lower || "cookies" in lower || "certain audiences" in lower ->
-                if (isInstagram) {
-                    "This Instagram post requires sign-in or is restricted. Tap \"IG\" at the top to connect your account locally, or retry later."
-                } else {
-                    "This post requires login or is temporarily rate-limited by the platform. Try updating the Engine or retry later."
+            "empty media response" in lower || "login" in lower || "cookies" in lower || "certain audiences" in lower ||
+                (isFacebook && ("no video found" in lower || "http error 404" in lower || "http error 400" in lower)) ->
+                when {
+                    isInstagram -> "This Instagram post requires sign-in or is restricted. Tap \"IG/FB\" at the top to connect your account locally, or retry later."
+                    isFacebook -> "This Facebook post may be private or restricted. Tap \"IG/FB\" at the top to connect Facebook locally, or retry later."
+                    else -> "This post requires login or is temporarily rate-limited by the platform. Try updating the Engine or retry later."
                 }
             "no video formats found" in lower || "no video in this post" in lower ->
                 "No downloadable video or image was found at this link."
@@ -1623,8 +1872,10 @@ object ZarditEngine {
             instanceFollowRedirects = true
             setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/125.0 Mobile Safari/537.36")
             val lower = fileUrl.lowercase(Locale.US)
-            if ("instagram" in lower || "cdninstagram" in lower || "fbcdn" in lower) {
+            if ("instagram" in lower || "cdninstagram" in lower) {
                 setRequestProperty("Referer", "https://www.instagram.com/")
+            } else if ("facebook" in lower || "fbcdn" in lower) {
+                setRequestProperty("Referer", "https://www.facebook.com/")
             }
         }
         val total = conn.contentLengthLong
@@ -1705,7 +1956,13 @@ object ZarditEngine {
             }
 
             fun runRequest(req: YoutubeDLRequest) {
-                if (useInstagramCookies && InstagramAuth.hasSession(context)) {
+                val platform = detectPlatformName(url)
+                if (platform == "Facebook" && FacebookAuth.hasSession(context)) {
+                    FacebookAuth.withTempCookieFile(context) { cookieFile ->
+                        req.addOption("--cookies", cookieFile.absolutePath)
+                        YoutubeDL.getInstance().execute(req, processId, progressCallback)
+                    }
+                } else if (useInstagramCookies && InstagramAuth.hasSession(context)) {
                     InstagramAuth.withTempCookieFile(context) { cookieFile ->
                         req.addOption("--cookies", cookieFile.absolutePath)
                         YoutubeDL.getInstance().execute(req, processId, progressCallback)

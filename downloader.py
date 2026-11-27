@@ -27,6 +27,8 @@ import yt_dlp
 from yt_dlp.utils import DownloadError as _YtdlpDownloadError
 from yt_dlp.utils import UnavailableVideoError
 
+_ORIG_URLOPEN = urllib.request.urlopen
+
 from config import (
     APP_VERSION,
     AUDIO_BITRATES,
@@ -59,6 +61,7 @@ from zardit_core.formats import (
     _make_image_info,
     resolution_label,
 )
+from zardit_core.facebook import fetch_facebook_media
 from zardit_core.instagram import (
     _THREADS_DASH_RE,
     _THREADS_DIMS_RE,
@@ -321,9 +324,9 @@ VIDEO_ID_PATTERN = re.compile(r"^[0-9A-Za-z_-]{11}$")
 
 
 def _ig_cookie_options(url):
-    """Return yt-dlp cookiesfrombrowser options when enabled for Instagram."""
+    """Return yt-dlp cookiesfrombrowser options when enabled for Instagram or Facebook."""
 
-    if detect_platform(url) != "Instagram":
+    if detect_platform(url) not in ("Instagram", "Facebook"):
         return {}
     browser = get_ig_browser()
     return {"cookiesfrombrowser": (browser,)} if browser else {}
@@ -589,14 +592,18 @@ def fetch_video_info(url):
 
     except Exception as error:
         err_text = str(error).lower()
-        if detect_platform(url) == "Threads" or any(
+        platform = detect_platform(url)
+        if platform in ("Threads", "Facebook") or any(
             token in err_text
             for token in (
                 "there is no video",
+                "no video found",
                 "no video formats",
                 "only images",
                 "unsupported url",
                 "cannot parse data",
+                "http error 404",
+                "http error 400",
             )
         ):
             fallback = _try_image_fallback(url)
@@ -834,6 +841,7 @@ def available_qualities(info):
     """
 
     mp4_labelled, mp4_guessed, other_video = set(), set(), set()
+    has_unlabelled_video = False
     formats = info.get("formats") or (
         [info] if info.get("height") or info.get("width") else []
     )
@@ -850,14 +858,14 @@ def available_qualities(info):
         ):
             continue
 
-        if vcodec is None and not (
-            video_format.get("height") and ext in _VIDEO_CONTAINERS
-        ):
+        if vcodec is None and ext not in _VIDEO_CONTAINERS:
             continue
 
         label = resolution_label(video_format)
 
         if not label:
+            if ext in _VIDEO_CONTAINERS:
+                has_unlabelled_video = True
             continue
 
         if ext == "mp4":
@@ -871,7 +879,10 @@ def available_qualities(info):
         mp4_labelled or mp4_guessed or other_video
     ):
         return sorted(mp4_labelled | mp4_guessed | other_video, reverse=True)
-    return sorted(mp4_labelled or mp4_guessed or other_video, reverse=True)
+    qualities = sorted(mp4_labelled or mp4_guessed or other_video, reverse=True)
+    if qualities:
+        return qualities
+    return [720] if has_unlabelled_video else []
 
 
 def video_selection(quality, ceiling=False):
@@ -1308,101 +1319,14 @@ def _extract_og_image(url):
     )
 
 
-_FB_IMAGE_RE = re.compile(
-    r'"(?:viewer_image|photo_image|image)"\s*:\s*\{\s*"uri"\s*:\s*"(https?:\\/\\/[^"]+)"'
-    r'(?:[^}]*?"height"\s*:\s*(\d+))?(?:[^}]*?"width"\s*:\s*(\d+))?',
-    re.IGNORECASE,
-)
-
-
 def _extract_facebook_images(url):
-    """Extract full-resolution uncropped images from a Facebook post/photo page."""
+    """Extract video/reel or full-resolution images from a Facebook post/photo page."""
 
-    if detect_platform(url) != "Facebook":
-        return None
-
-    try:
-        parsed = urlparse(url)
-        if parsed.scheme != "https" or not parsed.hostname:
-            return None
-        req = urllib.request.Request(
-            url, headers={"User-Agent": "Mozilla/5.0"}
-        )
-        with urllib.request.urlopen(req, timeout=8) as resp:
-            final_url = resp.geturl()
-            if urlparse(final_url).scheme != "https" or not validate_url(final_url):
-                return None
-            ctype = (resp.headers.get("Content-Type") or "").lower()
-            if "html" not in ctype:
-                return None
-            body = resp.read(1024 * 1024).decode("utf-8", errors="replace")
-    except Exception:
-        return None
-
-    meta = {}
-    for match in _OG_TAG_RE.finditer(body):
-        key = (match.group(1) or match.group(4) or "").lower()
-        val = html.unescape(match.group(2) or match.group(3) or "").strip()
-        if key and val and key not in meta:
-            meta[key] = val
-
-    title = meta.get("og:title") or meta.get("twitter:title") or "Facebook Photos"
-
-    seen_keys = set()
-    entries = []
-    for match in _FB_IMAGE_RE.finditer(body):
-        raw_uri = match.group(1).replace("\\/", "/")
-        try:
-            img_url = bytes(raw_uri, "utf-8").decode("unicode_escape")
-        except Exception:
-            img_url = raw_uri
-
-        if not img_url.startswith("https://") or _is_cropped_thumb_url(img_url):
-            continue
-
-        h = int(match.group(2)) if match.group(2) else None
-        w = int(match.group(3)) if match.group(3) else None
-        if (w and w < 250) or (h and h < 250):
-            continue
-
-        dedup_key = urlparse(img_url).path
-        if dedup_key in seen_keys:
-            continue
-        seen_keys.add(dedup_key)
-
-        idx = len(entries) + 1
-        dim = f" ({w}×{h})" if w and h else ""
-        entries.append({
-            "_zardit_media_kind": "image",
-            "id": hashlib.sha1(dedup_key.encode("utf-8", errors="ignore")).hexdigest()[:11],
-            "title": f"Photo {idx}{dim}",
-            "uploader": "Facebook",
-            "url": img_url,
-            "webpage_url": img_url,
-            "image_url": img_url,
-            "thumbnail": img_url,
-            "width": w,
-            "height": h,
-        })
-
-    if len(entries) == 1:
-        e = entries[0]
-        return _make_image_info(
-            e["image_url"],
-            title=title,
-            channel="Facebook",
-            media_id=e["id"],
-            width=e.get("width"),
-            height=e.get("height"),
-        )
-    if entries:
-        return {
-            "_type": "playlist",
-            "title": title,
-            "entries": entries,
-        }
-
-    return None
+    return fetch_facebook_media(
+        url, browser=get_ig_browser(), urlopen=urllib.request.urlopen
+    ) if urllib.request.urlopen is not _ORIG_URLOPEN else fetch_facebook_media(
+        url, browser=get_ig_browser()
+    )
 
 
 def _is_deferred_video_entry(entry):

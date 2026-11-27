@@ -226,9 +226,25 @@ def parse_instagram_source(raw_text, source_url=None):
 
     text = (raw_text or "").strip()
     if not text:
-        raise DownloadError("Paste the Instagram page source or ?__a=1 JSON first.")
+        raise DownloadError("Paste the Instagram or Facebook page source or ?__a=1 JSON first.")
     if len(text) > 20 * 1024 * 1024:
         raise DownloadError("Pasted source text is too large (limit 20 MB).")
+
+    src_low = (source_url or "").lower()
+    is_fb_source = (
+        "facebook.com" in src_low
+        or "fb.watch" in src_low
+        or "fb.com" in src_low
+        or (
+            ("fbcdn.net" in text or '"__isNode":"Photo"' in text or "browser_native_" in text)
+            and "instagram.com" not in text
+            and not text.lstrip().startswith("{")
+        )
+    )
+    if is_fb_source:
+        from zardit_core.facebook import parse_facebook_source
+
+        return parse_facebook_source(text, source_url)
 
     ig_headers = {
         "User-Agent": "Mozilla/5.0",

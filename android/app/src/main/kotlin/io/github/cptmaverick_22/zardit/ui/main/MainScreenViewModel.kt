@@ -7,10 +7,12 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import io.github.cptmaverick_22.zardit.ZarditApp
 import io.github.cptmaverick_22.zardit.data.DiagnosticLog
+import io.github.cptmaverick_22.zardit.data.FacebookAuth
 import io.github.cptmaverick_22.zardit.data.HistoryItem
 import io.github.cptmaverick_22.zardit.data.HistoryStore
 import io.github.cptmaverick_22.zardit.data.InstagramAuth
 import io.github.cptmaverick_22.zardit.data.ZarditPrefs
+import io.github.cptmaverick_22.zardit.downloader.ZarditParser
 import io.github.cptmaverick_22.zardit.downloader.AppTab
 import io.github.cptmaverick_22.zardit.downloader.AppUpdateInfo
 import io.github.cptmaverick_22.zardit.downloader.AppUpdater
@@ -62,6 +64,7 @@ data class MainUiState(
     val pendingInstallApkPath: String? = null,
     val needInstallPermissionPrompt: Boolean = false,
     val isInstagramConnected: Boolean = false,
+    val isFacebookConnected: Boolean = false,
     val history: List<HistoryItem> = emptyList(),
 )
 
@@ -82,6 +85,7 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
             hasCustomFolder = prefs.getTreeUri() != null,
             autoCheckUpdates = prefs.isAppUpdateAutoCheckEnabled(),
             isInstagramConnected = InstagramAuth.hasSession(application),
+            isFacebookConnected = FacebookAuth.hasSession(application),
             history = historyStore.loadAll(),
         ),
     )
@@ -404,7 +408,8 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
             imageUrls = chosenImages,
             directVideoUrl = selectedVidOpt?.directUrl ?: preview.directVideoUrl,
             directAudioUrl = preview.directAudioUrl,
-            useInstagramCookies = preview.usedInstagramAuth,
+            useInstagramCookies = preview.usedInstagramAuth ||
+                (ZarditParser.detectPlatformName(preview.url) == "Facebook" && current.isFacebookConnected),
             customTitle = preview.sanitizedTitle,
             formatId = selectedVidOpt?.formatId,
             needsAudioMux = selectedVidOpt?.needsAudioMux ?: false,
@@ -426,6 +431,25 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
             it.copy(
                 isInstagramConnected = false,
                 updateBanner = "Instagram session disconnected and wiped.",
+            )
+        }
+    }
+
+    fun onFacebookConnected() {
+        _uiState.update {
+            it.copy(
+                isFacebookConnected = FacebookAuth.hasSession(app),
+                updateBanner = "Facebook connected locally (AES-GCM encrypted).",
+            )
+        }
+    }
+
+    fun disconnectFacebook() {
+        FacebookAuth.clearSession(app)
+        _uiState.update {
+            it.copy(
+                isFacebookConnected = false,
+                updateBanner = "Facebook session disconnected and wiped.",
             )
         }
     }

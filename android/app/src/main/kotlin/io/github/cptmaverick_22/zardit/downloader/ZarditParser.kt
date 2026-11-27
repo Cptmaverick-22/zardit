@@ -12,6 +12,18 @@ data class ParsedDashManifest(
     val audioBytes: Long?,
 )
 
+data class ParsedFacebookMedia(
+    val mediaId: String,
+    val title: String,
+    val author: String,
+    val thumbnailUrl: String?,
+    val videoOptions: List<VideoOption>,
+    val directVideoUrl: String?,
+    val directAudioUrl: String?,
+    val audioBytes: Long?,
+    val imageUrls: List<String>,
+)
+
 object ZarditParser {
 
     private val noteResRegex = Regex("""^(\d{3,4})p""", RegexOption.IGNORE_CASE)
@@ -21,6 +33,11 @@ object ZarditParser {
     private val blockedHostSuffixes = listOf(".localhost", ".localdomain", ".local", ".internal", ".home", ".lan")
     private val numericIpOrV6Regex = Regex("""^(?:\d{1,3}(?:\.\d{1,3}){3}|.*:.*)$""")
     private val allowedIgCookies = setOf("sessionid", "csrftoken", "ds_user_id")
+    private val allowedFbCookies = setOf("c_user", "xs", "datr", "sb")
+    private val croppedFbRegex = Regex(
+        """(?:/[sp]\d+x\d+/|/c\d+\.\d+\.\d+\.\d+|dst-jpg_e\d+_[sp]|sqp=|profile_pic)""",
+        RegexOption.IGNORE_CASE,
+    )
 
     fun isSafePublicUrl(url: String): Boolean {
         val trimmed = url.trim()
@@ -347,5 +364,193 @@ object ZarditParser {
             }
         }
         return if ("sessionid" in result) result else emptyMap()
+    }
+
+    fun extractMinimalFacebookCookies(rawCookieHeader: String?): Map<String, String> {
+        if (rawCookieHeader.isNullOrBlank()) return emptyMap()
+        val result = linkedMapOf<String, String>()
+        rawCookieHeader.split(";").forEach { part ->
+            val idx = part.indexOf('=')
+            if (idx <= 0) return@forEach
+            val name = part.substring(0, idx).trim()
+            val value = part.substring(idx + 1).trim()
+            if (name in allowedFbCookies && value.isNotEmpty()) {
+                result[name] = value
+            }
+        }
+        return if ("c_user" in result && "xs" in result) result else emptyMap()
+    }
+
+    private fun isFbNoiseImage(url: String, preCtx: String = ""): Boolean {
+        val low = url.lowercase(Locale.US)
+        if (!low.startsWith("https://") || "fbcdn.net" !in low) return true
+        if ("/t39.30808-1/" in low || "/t1.30497-1/" in low || "/t39.1997-6/" in low ||
+            "/m1/v/t6/" in low || "rsrc.php" in low || "emoji.php" in low || ".kf" in low ||
+            "_fb30_" in low || "fb30_" in low
+        ) {
+            return true
+        }
+        if (croppedFbRegex.containsMatchIn(url)) return true
+        val immediate = preCtx.substringAfterLast('}').substringAfterLast(',').lowercase(Locale.US)
+        return "blurred_image" in immediate || "profile_picture" in immediate ||
+            "neutralsilhouette" in immediate || "silhouette" in immediate ||
+            "actor_photo" in immediate || "favicon" in immediate
+    }
+
+    fun parseFacebookHtml(rawHtml: String, sourceUrl: String): ParsedFacebookMedia? {
+        if (rawHtml.isBlank()) return null
+
+        val ogMeta = mutableMapOf<String, String>()
+        Regex(
+            """<meta[^>]+(?:property|name)=["']([^"']+)["'][^>]+content=["']([^"']*)["']|<meta[^>]+content=["']([^"']*)["'][^>]+(?:property|name)=["']([^"']+)["']""",
+            RegexOption.IGNORE_CASE,
+        ).findAll(rawHtml).forEach { m ->
+            val k = (m.groupValues[1].ifEmpty { m.groupValues[4] }).lowercase(Locale.US)
+            val v = decodeBasicHtml(m.groupValues[2].ifEmpty { m.groupValues[3] }).trim()
+            if (k.isNotEmpty() && v.isNotEmpty() && k !in ogMeta) ogMeta[k] = v
+        }
+
+        val mediaId = Regex("""(?:fbid=|v=|/(?:videos|reel|posts|share/[vp])/|/)([0-9A-Za-z._-]{6,})""")
+            .find(ogMeta["og:url"] ?: sourceUrl)?.groupValues?.getOrNull(1)
+            ?: sourceUrl.hashCode().toString()
+        val rawPageTitle = Regex("""<title[^>]*>(.*?)</title>""", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+            .find(rawHtml)?.groupValues?.getOrNull(1)?.let { decodeBasicHtml(it).replace(Regex("""\s+"""), " ").trim() }
+            .orEmpty()
+        var title = ogMeta["og:description"] ?: ogMeta["og:title"] ?: ogMeta["twitter:title"] ?: rawPageTitle
+        if (title.lowercase(Locale.US) in setOf("facebook", "log in or sign up to view", "log into facebook")) title = ""
+        if (title.isBlank()) title = "Facebook Post ($mediaId)"
+        val author = (ogMeta["og:title"] ?: "Facebook").let {
+            if (it.lowercase(Locale.US) in setOf("facebook", "watch", "reels")) "Facebook" else it
+        }
+        val ogThumb = (ogMeta["og:image:secure_url"] ?: ogMeta["og:image"] ?: ogMeta["twitter:image"])
+            ?.takeIf { !isFbNoiseImage(it) }
+
+        // 1. Check for Video / Reel streams first unless URL is an explicit photo/post photo target
+        val srcLow = "$sourceUrl ${ogMeta["og:url"].orEmpty()}".lowercase(Locale.US)
+        val isExplicitVideoUrl = "/reel/" in srcLow || "/videos/" in srcLow || "/share/v/" in srcLow || "fb.watch" in srcLow
+        val isExplicitPhotoUrl = "/photo" in srcLow || "fbid=" in srcLow || "/share/p/" in srcLow
+
+        val dashRegex = Regex(""""video_dash_manifest"\s*:\s*"((?:\\.|[^"\\])*)"""")
+        val photoImgRegex = Regex(""""(?:viewer_image|photo_image)"\s*:\s*\{([^}]{1,900})\}""")
+        val vidKeyRegex = Regex(""""(?:browser_native_hd_url|playable_url_quality_hd|browser_native_sd_url|playable_url)"\s*:""")
+        val firstPhotoHit = photoImgRegex.find(rawHtml)
+        val firstVidHit = dashRegex.find(rawHtml) ?: vidKeyRegex.find(rawHtml)
+        val preferPhotosOverSidebarVideo = isExplicitPhotoUrl ||
+            (!isExplicitVideoUrl && firstPhotoHit != null && (firstVidHit == null || firstPhotoHit.range.first < firstVidHit.range.first))
+
+        val videoChoices = mutableListOf<VideoOption>()
+        var firstVideoUrl: String? = null
+        if (!preferPhotosOverSidebarVideo) {
+            dashRegex.findAll(rawHtml).forEach { dm ->
+                val xml = dm.groupValues[1].unescapeJsonUrl().replace("\\n", "\n")
+                val parsed = parseDashManifest(xml)
+                if (parsed != null && parsed.videoOptions.isNotEmpty()) {
+                    return ParsedFacebookMedia(
+                        mediaId = mediaId,
+                        title = title,
+                        author = author,
+                        thumbnailUrl = ogThumb,
+                        videoOptions = parsed.videoOptions,
+                        directVideoUrl = parsed.videoOptions.first().directUrl,
+                        directAudioUrl = parsed.audioUrl,
+                        audioBytes = parsed.audioBytes,
+                        imageUrls = listOfNotNull(ogThumb),
+                    )
+                }
+            }
+
+            val vidKeys = listOf(
+                Triple("browser_native_hd_url", 720, "HD"),
+                Triple("playable_url_quality_hd", 720, "HD"),
+                Triple("browser_native_sd_url", 480, "SD"),
+                Triple("playable_url", 480, "SD"),
+            )
+            val seenVidUrls = mutableSetOf<String>()
+            val seenTiers = mutableSetOf<Int>()
+            for ((key, tier, badge) in vidKeys) {
+                val match = Regex(""""$key"\s*:\s*"((?:\\.|[^"\\])*)"""").find(rawHtml) ?: continue
+                val u = decodeBasicHtml(match.groupValues[1].unescapeJsonUrl()).trim()
+                if (u.startsWith("https://") && isSafePublicUrl(u) && seenVidUrls.add(u)) {
+                    if (firstVideoUrl == null) firstVideoUrl = u
+                    if (seenTiers.add(tier)) {
+                        videoChoices += VideoOption(tier, "${tier}p", badge, "MP4 · Direct stream", approxSizeBytes = null, directUrl = u)
+                    }
+                }
+            }
+            if (videoChoices.isEmpty()) {
+                val ogVid = (ogMeta["og:video:secure_url"] ?: ogMeta["og:video"])?.takeIf { it.startsWith("https://") && isSafePublicUrl(it) }
+                if (ogVid != null) {
+                    firstVideoUrl = ogVid
+                    videoChoices += VideoOption(720, "Original", "MP4", "MP4 · Direct stream", approxSizeBytes = null, directUrl = ogVid)
+                }
+            }
+            if (videoChoices.isNotEmpty() && firstVideoUrl != null) {
+                return ParsedFacebookMedia(
+                    mediaId = mediaId,
+                    title = title,
+                    author = author,
+                    thumbnailUrl = ogThumb,
+                    videoOptions = videoChoices.sortedByDescending { it.height },
+                    directVideoUrl = firstVideoUrl,
+                    directAudioUrl = null,
+                    audioBytes = null,
+                    imageUrls = listOfNotNull(ogThumb),
+                )
+            }
+        }
+
+        // 2. Photos / Albums
+        val images = linkedSetOf<String>()
+        val seenPaths = mutableSetOf<String>()
+        val uriFieldRegex = Regex(""""uri"\s*:\s*"(https?:\\/\\/[^"]+|https?://[^"]+)"""")
+
+        fun addPhoto(rawUri: String, preCtx: String = "") {
+            val u = decodeBasicHtml(rawUri.unescapeJsonUrl()).trim()
+            if (isFbNoiseImage(u, preCtx) || !isSafePublicUrl(u)) return
+            val pathKey = runCatching { URI(u).path }.getOrDefault(u)
+            if (seenPaths.add(pathKey)) images.add(u)
+        }
+
+        Regex(""""(?:viewer_image|photo_image)"\s*:\s*\{([^}]{1,900})\}""").findAll(rawHtml).forEach { m ->
+            val u = uriFieldRegex.find(m.groupValues[1])?.groupValues?.getOrNull(1) ?: return@forEach
+            val pre = rawHtml.substring((m.range.first - 140).coerceAtLeast(0), m.range.first)
+            addPhoto(u, pre)
+        }
+        if (images.isEmpty()) {
+            Regex(""""image"\s*:\s*\{([^}]{1,900})\}""").findAll(rawHtml).forEach { m ->
+                val u = uriFieldRegex.find(m.groupValues[1])?.groupValues?.getOrNull(1) ?: return@forEach
+                val pre = rawHtml.substring((m.range.first - 120).coerceAtLeast(0), m.range.first)
+                addPhoto(u, pre)
+            }
+        }
+        if (images.isEmpty()) {
+            Regex("""<link[^>]+rel=["']preload["'][^>]+>""", RegexOption.IGNORE_CASE).findAll(rawHtml).forEach { m ->
+                val tag = m.value
+                if ("as=\"image\"" in tag || "as='image'" in tag) {
+                    val href = Regex("""href=["'](https?://[^"']+)["']""", RegexOption.IGNORE_CASE)
+                        .find(tag)?.groupValues?.getOrNull(1)
+                    if (href != null && ("/t51." in href || "/t39.99422-6/" in href || "/t39.30808-6/" in href)) {
+                        addPhoto(href)
+                    }
+                }
+            }
+        }
+        if (images.isEmpty() && ogThumb != null) {
+            addPhoto(ogThumb)
+        }
+
+        if (images.isEmpty()) return null
+        val list = images.toList()
+        return ParsedFacebookMedia(
+            mediaId = mediaId,
+            title = title,
+            author = author,
+            thumbnailUrl = list.first(),
+            videoOptions = emptyList(),
+            directVideoUrl = null,
+            directAudioUrl = null,
+            audioBytes = null,
+            imageUrls = list,
+        )
     }
 }
