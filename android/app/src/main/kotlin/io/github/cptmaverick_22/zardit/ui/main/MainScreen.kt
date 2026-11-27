@@ -989,11 +989,11 @@ fun MainScreen(
     if (showAccountsSheet) {
         AlertDialog(
             onDismissRequest = { showAccountsSheet = false },
-            title = { Text("Private Accounts") },
+            title = { Text("Account Connections") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
-                        text = "Connect locally with AES-GCM encryption to download private reels, posts, and photos. Credentials stay strictly on your device.",
+                        text = "Public videos, reels, and photos always work without signing in. Connect an account locally (AES-GCM encrypted on device) only if you need private posts.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -1006,23 +1006,37 @@ fun MainScreen(
                         Row(
                             modifier = Modifier.padding(12.dp),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text("Instagram", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                                 Text(
-                                    text = if (ui.isInstagramConnected) "Connected ✓" else "Public posts only",
+                                    text = if (ui.isInstagramConnected) {
+                                        "Connected · Private & public posts"
+                                    } else {
+                                        "Optional · Sign in for private posts"
+                                    },
                                     style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    color = if (ui.isInstagramConnected) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
                                 )
                             }
                             if (ui.isInstagramConnected) {
-                                OutlinedButton(onClick = { showAccountsSheet = false; showIgDisconnect = true }) {
-                                    Text("Disconnect")
+                                OutlinedButton(
+                                    onClick = { showAccountsSheet = false; showIgDisconnect = true },
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                                ) {
+                                    Text("Disconnect", maxLines = 1, softWrap = false)
                                 }
                             } else {
-                                Button(onClick = { showAccountsSheet = false; showIgLogin = true }) {
-                                    Text("Connect")
+                                Button(
+                                    onClick = { showAccountsSheet = false; showIgLogin = true },
+                                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                                ) {
+                                    Text("Connect", maxLines = 1, softWrap = false)
                                 }
                             }
                         }
@@ -1036,23 +1050,37 @@ fun MainScreen(
                         Row(
                             modifier = Modifier.padding(12.dp),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text("Facebook", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                                 Text(
-                                    text = if (ui.isFacebookConnected) "Connected ✓" else "Public posts only",
+                                    text = if (ui.isFacebookConnected) {
+                                        "Connected · Private & public posts"
+                                    } else {
+                                        "Optional · Sign in for private posts"
+                                    },
                                     style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    color = if (ui.isFacebookConnected) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
                                 )
                             }
                             if (ui.isFacebookConnected) {
-                                OutlinedButton(onClick = { showAccountsSheet = false; showFbDisconnect = true }) {
-                                    Text("Disconnect")
+                                OutlinedButton(
+                                    onClick = { showAccountsSheet = false; showFbDisconnect = true },
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                                ) {
+                                    Text("Disconnect", maxLines = 1, softWrap = false)
                                 }
                             } else {
-                                Button(onClick = { showAccountsSheet = false; showFbLogin = true }) {
-                                    Text("Connect")
+                                Button(
+                                    onClick = { showAccountsSheet = false; showFbLogin = true },
+                                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                                ) {
+                                    Text("Connect", maxLines = 1, softWrap = false)
                                 }
                             }
                         }
@@ -1280,12 +1308,48 @@ fun MainScreen(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                             if (appInfo?.available == true && appInfo.releaseNotes.isNotEmpty()) {
-                                Text(
-                                    text = appInfo.releaseNotes,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    maxLines = 5,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
+                                val noteLines = remember(appInfo.releaseNotes) {
+                                    appInfo.releaseNotes
+                                        .lineSequence()
+                                        .map { it.trim() }
+                                        .filter { it.isNotEmpty() }
+                                        .toList()
+                                }
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.6f)),
+                                    color = MaterialTheme.colorScheme.surface,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(max = 156.dp),
+                                ) {
+                                    Column(
+                                        modifier = Modifier
+                                            .verticalScroll(rememberScrollState())
+                                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                                    ) {
+                                        noteLines.forEach { line ->
+                                            val isHeading = !line.startsWith("• ") &&
+                                                line.length <= 42 &&
+                                                !line.endsWith(".")
+                                            Text(
+                                                text = line,
+                                                style = if (isHeading) {
+                                                    MaterialTheme.typography.labelMedium
+                                                } else {
+                                                    MaterialTheme.typography.bodySmall
+                                                },
+                                                fontWeight = if (isHeading) FontWeight.SemiBold else FontWeight.Normal,
+                                                color = if (isHeading) {
+                                                    MaterialTheme.colorScheme.primary
+                                                } else {
+                                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                                },
+                                            )
+                                        }
+                                    }
+                                }
                             }
                             if (ui.isDownloadingApk) {
                                 LinearProgressIndicator(
@@ -1293,6 +1357,7 @@ fun MainScreen(
                                     modifier = Modifier.fillMaxWidth(),
                                 )
                             }
+                            val canInstallNow = appInfo?.available == true && appInfo.asset != null
                             Row(
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                                 modifier = Modifier.fillMaxWidth(),
@@ -1300,17 +1365,31 @@ fun MainScreen(
                                 OutlinedButton(
                                     onClick = { viewModel.checkAppUpdateNow() },
                                     enabled = !ui.isCheckingAppUpdate && !ui.isDownloadingApk,
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
                                     modifier = Modifier.weight(1f),
                                 ) {
-                                    Text(if (ui.isCheckingAppUpdate) "Checking…" else "Check App")
+                                    Text(
+                                        text = when {
+                                            ui.isCheckingAppUpdate -> "Checking…"
+                                            canInstallNow -> "Recheck"
+                                            else -> "Check App"
+                                        },
+                                        maxLines = 1,
+                                        softWrap = false,
+                                    )
                                 }
-                                if (appInfo?.available == true && appInfo.asset != null) {
+                                if (canInstallNow) {
                                     Button(
                                         onClick = { viewModel.downloadAndInstallAppUpdate() },
                                         enabled = !ui.isDownloadingApk,
-                                        modifier = Modifier.weight(1f),
+                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+                                        modifier = Modifier.weight(1.25f),
                                     ) {
-                                        Text(if (ui.isDownloadingApk) "${ui.apkDownloadPct}%" else "Install")
+                                        Text(
+                                            text = if (ui.isDownloadingApk) "${ui.apkDownloadPct}%" else "Install",
+                                            maxLines = 1,
+                                            softWrap = false,
+                                        )
                                     }
                                 }
                             }

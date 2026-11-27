@@ -247,6 +247,60 @@ class AppUpdaterTests(unittest.TestCase):
         app_updater.dismiss_cached_update(asset_sha256="a" * 64, latest_version="1.5")
         self.assertIsNone(app_updater.background_check_app_update(now=2500.0))
 
+    def test_release_notes_markdown_cleanup(self):
+        cleaned = app_updater._summarize_release_notes(
+            "## Zardit v1.4.2\n"
+            "---\n"
+            "### What's New\n"
+            "- **Private Facebook:** Works with `IG / FB` cookies & [Release](https://github.com/a/b).\n"
+            "**Full Changelog:** https://github.com/a/b\n"
+        )
+        self.assertNotIn("##", cleaned)
+        self.assertNotIn("**", cleaned)
+        self.assertNotIn("Full Changelog", cleaned)
+        self.assertIn("What's New", cleaned)
+        self.assertIn("• Private Facebook: Works with IG / FB cookies & Release.", cleaned)
+
+    def test_linux_appimage_self_update_stages_and_launches_swapper(self):
+        payload = b"new-appimage-binary"
+        sha = hashlib.sha256(payload).hexdigest()
+        app_dir = Path(self.temp.name) / "apps"
+        app_dir.mkdir(parents=True)
+        current_appimage = app_dir / "Zardit-1.4.1-x86_64.AppImage"
+        current_appimage.write_bytes(b"old-appimage")
+
+        info = app_updater.AppUpdateInfo(
+            current_version="1.4.1",
+            latest_version="1.4.2",
+            tag_name="v1.4.2",
+            available=True,
+            same_tag_hotfix=False,
+            release_url=app_updater.RELEASES_PAGE_URL,
+            release_notes="",
+            asset=app_updater.ReleaseAsset(
+                "Zardit-1.4.2-x86_64.AppImage",
+                "https://github.com/Cptmaverick-22/zardit/releases/download/v1.4.2/Zardit-1.4.2-x86_64.AppImage",
+                sha,
+                len(payload),
+                0,
+            ),
+            install_mode="linux_appimage",
+        )
+        with mock.patch.object(app_updater.sys, "platform", "linux"), \
+                mock.patch.dict("os.environ", {"APPIMAGE": str(current_appimage)}), \
+                mock.patch.object(app_updater, "_open_trusted", return_value=_FakeResponse(payload, info.asset.url)), \
+                mock.patch.object(app_updater.subprocess, "Popen") as popen_mock:
+            action, target = app_updater.install_app_update(info)
+
+        self.assertEqual(action, "appimage_updating")
+        self.assertEqual(target, current_appimage.resolve())
+        popen_mock.assert_called_once()
+        cmd = popen_mock.call_args.args[0]
+        self.assertEqual(cmd[0], "/bin/sh")
+        script_path = Path(cmd[1])
+        self.assertTrue(script_path.is_file())
+        self.assertIn("unset APPDIR APPIMAGE ARGV0 OWD PYTHONHOME PYTHONPATH LD_LIBRARY_PATH", script_path.read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()

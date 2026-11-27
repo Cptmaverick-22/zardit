@@ -219,12 +219,34 @@ object AppUpdater {
         }.getOrDefault("")
     }
 
-    private fun summarizeNotes(body: String): String =
-        body.lineSequence()
-            .map { it.trim() }
-            .filter { it.isNotEmpty() }
-            .take(6)
-            .joinToString("\n")
+    internal fun summarizeNotes(body: String): String {
+        val cleaned = mutableListOf<String>()
+        for (raw in body.lineSequence()) {
+            var line = raw.trim()
+            if (line.isEmpty()) continue
+            if (Regex("^[-*_]{3,}$").matches(line)) continue
+            line = line
+                .replace(Regex("""\[([^\]]+)\]\([^)]+\)"""), "$1")
+                .replace(Regex("""^\s*#{1,6}\s*"""), "")
+                .replace("**", "")
+                .replace("__", "")
+                .replace("`", "")
+            line = if (Regex("""^\s*[-*]\s+.*""").matches(line)) {
+                "• " + line.replaceFirst(Regex("""^\s*[-*]\s+"""), "")
+            } else {
+                line
+            }
+            line = line.replace(Regex("""\s+"""), " ").trim()
+            if (line.isEmpty()) continue
+            if (cleaned.isEmpty() && Regex("""^zardit\s+v?\d+(?:\.\d+)*$""", RegexOption.IGNORE_CASE).matches(line)) {
+                continue
+            }
+            if (line.startsWith("Full Changelog:", ignoreCase = true)) continue
+            cleaned += line
+            if (cleaned.size >= 10) break
+        }
+        return cleaned.joinToString("\n")
+    }
 
     fun checkForUpdate(context: Context, timeoutMs: Int = 12000): AppUpdateInfo {
         val prefs = ZarditPrefs(context)

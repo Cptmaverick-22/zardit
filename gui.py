@@ -1121,7 +1121,7 @@ class UpdatesDialog(QDialog):
                 self.app_notes_box.hide()
 
             if info.asset:
-                if info.install_mode == "linux_appimage":
+                if info.install_mode == "linux_appimage" and not app_updater.can_self_update_appimage():
                     self.app_install_btn.setText("Download AppImage")
                 elif info.install_mode == "source":
                     self.app_install_btn.setText("Download Package")
@@ -1220,7 +1220,7 @@ class InstagramAccessDialog(QDialog):
         b_row = QHBoxLayout()
         b_row.setSpacing(8)
         self.browser_combo = QComboBox()
-        self.browser_combo.addItem("Off (Public posts only)", None)
+        self.browser_combo.addItem("Off (Public media works without login)", None)
         for key in IG_BROWSERS:
             self.browser_combo.addItem(IG_BROWSER_LABELS.get(key, key.title()), key)
 
@@ -3650,9 +3650,21 @@ class MainWindow(QWidget):
         if action == "installer_launched":
             self.show_status("✔ Verified installer launched. Completing upgrade…", "success")
             self.close()
+            app = QApplication.instance()
+            if app is not None:
+                app.quit()
         elif action == "portable_updating":
             self.show_status("✔ Verified portable update staged. Restarting…", "success")
             self.close()
+            app = QApplication.instance()
+            if app is not None:
+                app.quit()
+        elif action == "appimage_updating":
+            self.show_status("✔ Verified AppImage update staged. Restarting…", "success")
+            self.close()
+            app = QApplication.instance()
+            if app is not None:
+                app.quit()
         else:
             QMessageBox.information(
                 self,

@@ -89,4 +89,22 @@ class AppUpdaterTest {
         )
         assertFalse(alreadyInstalled.available)
     }
+
+    @Test
+    fun `summarizeNotes strips raw markdown headers bold markers and links`() {
+        val formatted = AppUpdater.summarizeNotes(
+            """
+            ## Zardit v1.4.2
+            ---
+            ### What's New
+            - **Private Facebook:** Works via `IG/FB` pill and [GitHub](https://github.com/a/b).
+            **Full Changelog:** https://github.com/a/b
+            """.trimIndent(),
+        )
+        assertFalse(formatted.contains("##"))
+        assertFalse(formatted.contains("**"))
+        assertFalse(formatted.contains("Full Changelog"))
+        assertTrue(formatted.contains("What's New"))
+        assertTrue(formatted.contains("• Private Facebook: Works via IG/FB pill and GitHub."))
+    }
 }

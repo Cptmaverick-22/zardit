@@ -540,6 +540,16 @@ def update_zardit_app():
             ),
             top=1,
         )
+    elif action == "appimage_updating":
+        print_block(
+            status_panel(
+                f"Verified AppImage update staged for [heading]{escape(str(target_path))}[/]. Applying on exit…",
+                "Updating AppImage",
+                border_style="success",
+                icon="[success]✔[/]",
+            ),
+            top=1,
+        )
     else:
         print_block(
             status_panel(
@@ -1092,7 +1102,7 @@ def configure_instagram_access():
     print_section("Private Instagram & Facebook Access")
     current = get_ig_browser()
     print_line(
-        f"[muted]Current browser cookies:[/] [heading]{escape(IG_BROWSER_LABELS.get(current, 'Off (Public posts only)'))}[/]"
+        f"[muted]Current browser cookies:[/] [heading]{escape(IG_BROWSER_LABELS.get(current, 'Off (Public media works without login)'))}[/]"
     )
 
     menu = Table(
@@ -1126,7 +1136,7 @@ def configure_instagram_access():
         b_table.add_column("Browser", style="heading")
         opts = [None, *IG_BROWSERS]
         for idx, b in enumerate(opts, start=1):
-            label = "Off (Public posts only)" if b is None else IG_BROWSER_LABELS.get(b, b.title())
+            label = "Off (Public media works without login)" if b is None else IG_BROWSER_LABELS.get(b, b.title())
             tag = " [success]● active[/]" if b == current else ""
             b_table.add_row(str(idx), f"{label}{tag}")
         print_block(b_table, top=1)

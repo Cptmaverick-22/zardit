@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -272,11 +273,29 @@ def _select_platform_asset(
     return None
 
 
-def _summarize_release_notes(body: str, max_lines: int = 8) -> str:
+def _clean_markdown_line(raw: str) -> str:
+    line = str(raw or "").strip()
+    if not line:
+        return ""
+    if re.fullmatch(r"[-*_]{3,}", line):
+        return ""
+    line = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", line)
+    line = re.sub(r"^\s*#{1,6}\s*", "", line)
+    line = line.replace("**", "").replace("__", "").replace("`", "")
+    if re.match(r"^\s*[-*]\s+", line):
+        line = "• " + re.sub(r"^\s*[-*]\s+", "", line)
+    return re.sub(r"\s+", " ", line).strip()
+
+
+def _summarize_release_notes(body: str, max_lines: int = 10) -> str:
     lines = []
     for raw in str(body or "").splitlines():
-        line = raw.strip()
+        line = _clean_markdown_line(raw)
         if not line:
+            continue
+        if not lines and re.match(r"^zardit\s+v?\d+(?:\.\d+)*$", line, re.IGNORECASE):
+            continue
+        if line.lower().startswith("full changelog:"):
             continue
         lines.append(line)
         if len(lines) >= max_lines:
@@ -531,6 +550,61 @@ def _safe_extract_zip(zip_path: Path, target_dir: Path) -> None:
         zf.extractall(target_dir)
 
 
+def _current_appimage_path() -> Path | None:
+    if not sys.platform.startswith("linux"):
+        return None
+    raw = os.environ.get("APPIMAGE") or ""
+    if not raw:
+        return None
+    try:
+        candidate = Path(raw).resolve()
+        return candidate if candidate.is_file() else None
+    except OSError:
+        return None
+
+
+def can_self_update_appimage() -> bool:
+    appimage = _current_appimage_path()
+    if appimage is None:
+        return False
+    return os.access(appimage.parent, os.W_OK) and os.access(appimage, os.W_OK)
+
+
+def _launch_linux_appimage_swap(
+    staged_file: Path,
+    target_appimage: Path,
+    pid: int,
+) -> None:
+    script_path = staged_file.parent / "apply_appimage_update.sh"
+    script = (
+        "#!/bin/sh\n"
+        f"PID={int(pid)}\n"
+        f"STAGED={shlex.quote(str(staged_file))}\n"
+        f"TARGET={shlex.quote(str(target_appimage))}\n"
+        f"STAGING_DIR={shlex.quote(str(staged_file.parent))}\n"
+        "i=0\n"
+        "while kill -0 \"$PID\" 2>/dev/null && [ \"$i\" -lt 100 ]; do\n"
+        "  sleep 0.2\n"
+        "  i=$((i + 1))\n"
+        "done\n"
+        "chmod 755 \"$STAGED\" || exit 1\n"
+        "mv -f \"$STAGED\" \"$TARGET\" || exit 1\n"
+        "rm -rf \"$STAGING_DIR\" 2>/dev/null || true\n"
+        "unset APPDIR APPIMAGE ARGV0 OWD PYTHONHOME PYTHONPATH LD_LIBRARY_PATH QT_PLUGIN_PATH QML2_IMPORT_PATH\n"
+        "nohup \"$TARGET\" >/dev/null 2>&1 </dev/null &\n"
+    )
+    script_path.write_text(script, encoding="utf-8")
+    os.chmod(script_path, 0o700)
+    subprocess.Popen(
+        ["/bin/sh", str(script_path)],
+        start_new_session=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+    )
+
+
 def _launch_windows_portable_swap(staged_root: Path, install_dir: Path, pid: int) -> None:
     batch_path = staged_root.parent / "apply_portable_update.cmd"
     # Determine whether the zip extracted a nested Zardit/ folder or direct files
@@ -540,20 +614,35 @@ def _launch_windows_portable_swap(staged_root: Path, install_dir: Path, pid: int
 
     script = (
         "@echo off\r\n"
+        "chcp 65001 >NUL\r\n"
         "setlocal\r\n"
-        f":waitloop\r\n"
+        "set /a wait_tries=0\r\n"
+        ":waitloop\r\n"
         f"tasklist /FI \"PID eq {pid}\" 2>NUL | find /I \"{pid}\" >NUL\r\n"
         "if not errorlevel 1 (\r\n"
+        "  set /a wait_tries+=1\r\n"
+        "  if %wait_tries% GEQ 25 goto copyloop_init\r\n"
         "  ping -n 2 127.0.0.1 >NUL\r\n"
         "  goto waitloop\r\n"
         ")\r\n"
-        f"xcopy /E /Y /I /Q \"{source_dir}\\*\" \"{install_dir}\\\" >NUL\r\n"
+        ":copyloop_init\r\n"
+        "set /a copy_tries=0\r\n"
+        ":copyloop\r\n"
+        f"xcopy /E /Y /I /Q \"{source_dir}\\*\" \"{install_dir}\\\" >NUL 2>&1\r\n"
+        "if errorlevel 1 (\r\n"
+        "  set /a copy_tries+=1\r\n"
+        "  if %copy_tries% LSS 8 (\r\n"
+        "    ping -n 2 127.0.0.1 >NUL\r\n"
+        "    goto copyloop\r\n"
+        "  )\r\n"
+        ")\r\n"
         f"start \"\" \"{install_dir}\\Zardit.exe\"\r\n"
-        f"rmdir /S /Q \"{staged_root}\" 2>NUL\r\n"
-        "del \"%~f0\" 2>NUL\r\n"
+        f"rmdir /S /Q \"{staged_root.parent}\" 2>NUL\r\n"
     )
     batch_path.write_text(script, encoding="utf-8")
-    creationflags = 0x00000008 | 0x00000200 | 0x08000000
+    # CREATE_NEW_PROCESS_GROUP (0x00000200) | CREATE_NO_WINDOW (0x08000000)
+    # Note: DETACHED_PROCESS + CREATE_NO_WINDOW is invalid in Win32 CreateProcess.
+    creationflags = 0x00000200 | 0x08000000
     subprocess.Popen(
         ["cmd.exe", "/c", str(batch_path)],
         creationflags=creationflags,
@@ -577,7 +666,10 @@ def install_app_update(info: AppUpdateInfo, report=None) -> tuple[str, Path | No
         if mode == "windows_installer" and sys.platform == "win32":
             if report:
                 report("Launching verified installer…")
-            subprocess.Popen([str(exe_path), "/SP-"], close_fds=True)
+            subprocess.Popen(
+                [str(exe_path), "/SP-", "/CLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS"],
+                close_fds=True,
+            )
             return ("installer_launched", exe_path)
         return ("downloaded", exe_path)
 
@@ -599,7 +691,27 @@ def install_app_update(info: AppUpdateInfo, report=None) -> tuple[str, Path | No
             shutil.rmtree(staging, ignore_errors=True)
             raise
 
-    # Linux AppImage / source fallback: save verified package cleanly in Downloads
+    if mode == "linux_appimage" and can_self_update_appimage():
+        target_appimage = _current_appimage_path()
+        if target_appimage is not None:
+            staging = Path(
+                tempfile.mkdtemp(prefix=".zardit-update-", dir=target_appimage.parent)
+            )
+            try:
+                if report:
+                    report(f"Downloading {info.asset.name}…")
+                staged_path = download_and_verify_asset(info.asset, staging, report=report)
+                os.chmod(staged_path, 0o755)
+                _write_state(installed_asset_sha256=info.asset.sha256, available=False)
+                if report:
+                    report("Applying verified AppImage update…")
+                _launch_linux_appimage_swap(staged_path, target_appimage, os.getpid())
+                return ("appimage_updating", target_appimage)
+            except Exception:
+                shutil.rmtree(staging, ignore_errors=True)
+                raise
+
+    # Source / non-writable AppImage fallback: save verified package cleanly in Downloads
     dl_dir = config.get_download_dir(create=True)
     if report:
         report(f"Downloading {info.asset.name}…")
