@@ -1690,7 +1690,7 @@ class MainWindow(QWidget):
         url_header.setSpacing(8)
         url_label = QLabel("Media link")
         url_label.setObjectName("sectionTitle")
-        url_hint = QLabel("YouTube · Instagram · Facebook · Reddit · X · Threads")
+        url_hint = QLabel("YouTube · Instagram · Facebook · X · Threads")
         url_hint.setObjectName("mutedText")
         url_header.addWidget(url_label)
         url_header.addStretch(1)
@@ -1703,7 +1703,7 @@ class MainWindow(QWidget):
 
         self.url_input = QLineEdit()
         self.url_input.setPlaceholderText(
-            "Paste a link from YouTube, Instagram, Facebook, Reddit, X, or Threads…"
+            "Paste a link from YouTube, Instagram, Facebook, X, or Threads…"
         )
         self.url_input.setClearButtonEnabled(True)
         self.url_input.returnPressed.connect(self.fetch)
@@ -1740,7 +1740,7 @@ class MainWindow(QWidget):
 
         hero_body = QLabel(
             "Use Paste & Fetch above to grab video resolutions, audio tracks, "
-            "or multi-video posts across YouTube, Instagram, Facebook, Reddit, "
+            "or multi-video posts across YouTube, Instagram, Facebook, "
             "X / Twitter, Threads, and more."
         )
         hero_body.setObjectName("heroBody")
@@ -1752,7 +1752,6 @@ class MainWindow(QWidget):
             "YouTube",
             "Instagram",
             "Facebook",
-            "Reddit",
             "X / Twitter",
             "Threads",
         )
@@ -1760,7 +1759,7 @@ class MainWindow(QWidget):
             pill = QLabel(platform)
             pill.setObjectName("featurePill")
             pill.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            pills_grid.addWidget(pill, idx // 3, idx % 3)
+            pills_grid.addWidget(pill, 0, idx)
 
         hero_layout.addWidget(hero_title)
         hero_layout.addWidget(hero_body)

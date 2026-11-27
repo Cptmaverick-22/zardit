@@ -31,7 +31,6 @@ from yt_dlp.utils import UnavailableVideoError
 _ORIG_URLOPEN = urllib.request.urlopen
 
 from config import (
-    APP_VERSION,
     AUDIO_BITRATES,
     AUDIO_CHOICES,
     IMAGE_FORMATS,
@@ -102,6 +101,7 @@ from zardit_core.urls import (
     host_matches as _host_matches,
     is_cropped_thumb_url as _is_cropped_thumb_url,
     is_mix_list,
+    is_unsupported_reddit_url,
     list_id as _list_id,
     validate_url,
     validate_youtube_url,
@@ -557,10 +557,6 @@ def _try_image_fallback(url):
     if threads_info is not None:
         return threads_info
 
-    reddit_info = _extract_reddit_images(url)
-    if reddit_info is not None:
-        return reddit_info
-
     fb_info = _extract_facebook_images(url)
     if fb_info is not None:
         return fb_info
@@ -573,6 +569,12 @@ def fetch_video_info(url):
 
     if not validate_url(url):
         raise DownloadError("Invalid media URL.")
+
+    if is_unsupported_reddit_url(url):
+        raise DownloadError(
+            "Reddit downloads were removed because Reddit now blocks unauthenticated "
+            "access. Save Reddit videos directly from the Reddit app instead."
+        )
 
     url = _resolve_instagram_share_url(url)
 
@@ -698,6 +700,12 @@ def fetch_playlist(url):
 
     list_id = _list_id(url)
 
+    if is_unsupported_reddit_url(url):
+        raise DownloadError(
+            "Reddit downloads were removed because Reddit now blocks unauthenticated "
+            "access. Save Reddit videos directly from the Reddit app instead."
+        )
+
     if is_mix_list(list_id):
         raise DownloadError(
             "YouTube Mix lists are personalised and can't be downloaded as "
@@ -709,13 +717,6 @@ def fetch_playlist(url):
         raise DownloadError(
             "Watch Later and Liked videos need you to be signed in, so they "
             "can't be downloaded here."
-        )
-
-    reddit_gallery = _extract_reddit_images(url)
-    if reddit_gallery is not None and reddit_gallery.get("_type") == "playlist":
-        return PlaylistInfo(
-            title=reddit_gallery.get("title") or "Gallery",
-            entries=reddit_gallery.get("entries") or [],
         )
 
     try:
@@ -838,7 +839,7 @@ def available_qualities(info):
 
     Prefers labelled MP4 formats when present (avoiding HLS/odd duplicates
     on YouTube), and falls back to other video containers for platforms
-    such as Instagram, Facebook, Reddit, X/Twitter, and Threads.
+    such as Instagram, Facebook, X/Twitter, and Threads.
     """
 
     mp4_labelled, mp4_guessed, other_video = set(), set(), set()
@@ -1222,92 +1223,6 @@ def _probe_direct_image(url):
 
     if ext_hint:
         return _make_image_info(url, ext=ext_hint)
-
-    return None
-
-
-def _extract_reddit_images(url):
-    if detect_platform(url) != "Reddit":
-        return None
-
-    try:
-        parsed = urlparse(url)
-        if parsed.scheme != "https" or not parsed.hostname:
-            return None
-        clean_path = parsed.path.rstrip("/")
-        if not clean_path or clean_path.endswith(".json"):
-            json_url = f"https://{parsed.hostname}{clean_path}.json" if not clean_path.endswith(".json") else url
-        else:
-            json_url = f"https://{parsed.hostname}{clean_path}.json"
-
-        req = urllib.request.Request(
-            json_url, headers={"User-Agent": f"Zardit/{APP_VERSION}"}
-        )
-        with urllib.request.urlopen(req, timeout=8) as resp:
-            final_url = resp.geturl()
-            if urlparse(final_url).scheme != "https" or not validate_url(final_url):
-                return None
-            data = json.loads(resp.read(2 * 1024 * 1024).decode("utf-8", errors="replace"))
-    except Exception:
-        return None
-
-    if not isinstance(data, list) or not data:
-        return None
-
-    try:
-        post = data[0]["data"]["children"][0]["data"]
-    except (KeyError, IndexError, TypeError):
-        return None
-
-    title = post.get("title") or "Reddit Image"
-    author = post.get("author") or "Reddit"
-    post_id = post.get("id") or ""
-
-    if post.get("is_gallery") and isinstance(post.get("media_metadata"), dict):
-        items = (post.get("gallery_data") or {}).get("items") or []
-        media_meta = post["media_metadata"]
-        ordered_ids = [it.get("media_id") for it in items if it.get("media_id")] or list(media_meta.keys())
-        entries = []
-        for idx, mid in enumerate(ordered_ids, start=1):
-            meta = media_meta.get(mid) or {}
-            src = (meta.get("s") or {}).get("u") or ""
-            img_url = html.unescape(src)
-            if img_url.startswith("https://"):
-                entries.append({
-                    "_zardit_media_kind": "image",
-                    "id": mid,
-                    "title": f"{title} ({idx})",
-                    "uploader": author,
-                    "url": img_url,
-                    "webpage_url": img_url,
-                    "thumbnail": img_url,
-                })
-        if len(entries) == 1:
-            return _make_image_info(
-                entries[0]["url"],
-                title=title,
-                channel=author,
-                media_id=entries[0]["id"],
-            )
-        if entries:
-            return {
-                "_type": "playlist",
-                "title": title,
-                "entries": entries,
-            }
-
-    dest = html.unescape(post.get("url_overridden_by_dest") or post.get("url") or "")
-    if dest.startswith("https://") and _image_ext_from_url(dest):
-        return _make_image_info(dest, title=title, channel=author, media_id=post_id)
-
-    try:
-        preview_url = html.unescape(post["preview"]["images"][0]["source"]["url"])
-        if preview_url.startswith("https://"):
-            return _make_image_info(
-                preview_url, title=title, channel=author, media_id=post_id
-            )
-    except (KeyError, IndexError, TypeError):
-        pass
 
     return None
 

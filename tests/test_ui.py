@@ -379,8 +379,8 @@ class GuiInterfaceTests(unittest.TestCase):
 
     def test_extract_url_and_structured_formats(self):
         self.assertEqual(
-            downloader.extract_media_url("  https://www.reddit.com/r/videos/comments/abc/  "),
-            "https://www.reddit.com/r/videos/comments/abc/",
+            downloader.extract_media_url("  https://www.threads.net/@user/post/abc  "),
+            "https://www.threads.net/@user/post/abc",
         )
         self.assertEqual(
             downloader.detect_platform("https://www.threads.net/@user/post/abc"),
@@ -492,11 +492,11 @@ class GuiInterfaceTests(unittest.TestCase):
 
         out_dir = Path(self.temporary.name) / "images"
         img_info = downloader._make_image_info(
-            "https://i.redd.it/sample_img.png",
+            "https://cdn.example.com/sample_img.png",
             title="Cool Photo",
             ext="png",
             size=len(img_bytes),
-            channel="Reddit",
+            channel="Threads",
             media_id="img123",
         )
         self.assertTrue(downloader.is_image_only_info(img_info))
@@ -507,7 +507,7 @@ class GuiInterfaceTests(unittest.TestCase):
             side_effect=lambda req, timeout=20: FakeImgResp(req.full_url),
         ):
             res = downloader.download_image(
-                "https://i.redd.it/sample_img.png",
+                "https://cdn.example.com/sample_img.png",
                 fmt="original",
                 output_dir=out_dir,
                 info=img_info,
@@ -517,7 +517,7 @@ class GuiInterfaceTests(unittest.TestCase):
             self.assertEqual(res.file_path.read_bytes(), img_bytes)
 
             dup = downloader.download_image(
-                "https://i.redd.it/sample_img.png",
+                "https://cdn.example.com/sample_img.png",
                 fmt="original",
                 output_dir=out_dir,
                 info=img_info,
@@ -549,15 +549,15 @@ class GuiInterfaceTests(unittest.TestCase):
             self.assertIsNone(opt.size)
 
         summary = downloader.summarize_video(img_info)
-        self.window.url = "https://www.reddit.com/r/pics/comments/img123/"
+        self.window.url = "https://www.threads.net/@user/post/img123/"
         self.window.on_fetched(("image", img_info, summary, img_opts, None))
-        self.assertEqual(self.window.type_badge.text(), "REDDIT · IMAGE")
+        self.assertEqual(self.window.type_badge.text(), "THREADS · IMAGE")
         self.assertTrue(self.window.image_radio.isChecked())
         self.assertFalse(self.window.video_radio.isEnabled())
         self.assertEqual(self.window.format_list.count(), len(config.IMAGE_FORMATS))
 
         history.add_history_entry(
-            "Cool Photo", res.file_path, "image", "Original image", platform="Reddit"
+            "Cool Photo", res.file_path, "image", "Original image", platform="Threads"
         )
         self.window.show_page("history")
         self.window.set_history_filter("image")

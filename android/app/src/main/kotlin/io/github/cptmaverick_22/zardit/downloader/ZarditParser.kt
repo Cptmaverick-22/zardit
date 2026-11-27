@@ -91,13 +91,17 @@ object ZarditParser {
             lower.contains("/sets/")
     }
 
+    fun isUnsupportedRedditUrl(url: String): Boolean {
+        val lower = url.lowercase(Locale.US)
+        return "reddit.com" in lower || "redd.it" in lower || "v.redd.it" in lower
+    }
+
     fun detectPlatformName(url: String): String {
         val lower = url.lowercase(Locale.US)
         return when {
             "instagram.com" in lower || "instagr.am" in lower -> "Instagram"
             "youtube.com" in lower || "youtu.be" in lower -> "YouTube"
             "facebook.com" in lower || "fb.watch" in lower || "fb.com" in lower -> "Facebook"
-            "reddit.com" in lower || "redd.it" in lower || "v.redd.it" in lower -> "Reddit"
             "twitter.com" in lower || "x.com" in lower -> "X"
             "threads.net" in lower || "threads.com" in lower -> "Threads"
             else -> "Web"

@@ -19,12 +19,15 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -62,12 +65,9 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -102,18 +102,15 @@ import io.github.cptmaverick_22.zardit.downloader.ZarditParser
 
 private data class PlatformShortcut(
     val name: String,
-    val badge: String,
-    val accent: Color,
     val launchUrl: String,
 )
 
 private val QUICK_PLATFORMS = listOf(
-    PlatformShortcut("YouTube", "YT", Color(0xFFFF0033), "https://www.youtube.com/"),
-    PlatformShortcut("Instagram", "IG", Color(0xFFE1306C), "https://www.instagram.com/"),
-    PlatformShortcut("Facebook", "FB", Color(0xFF1877F2), "https://www.facebook.com/"),
-    PlatformShortcut("Reddit", "RD", Color(0xFFFF4500), "https://www.reddit.com/"),
-    PlatformShortcut("X / Twitter", "X", Color(0xFF1DA1F2), "https://x.com/"),
-    PlatformShortcut("Threads", "@", Color(0xFF8B5CF6), "https://www.threads.net/"),
+    PlatformShortcut("YouTube", "https://www.youtube.com/"),
+    PlatformShortcut("Instagram", "https://www.instagram.com/"),
+    PlatformShortcut("Facebook", "https://www.facebook.com/"),
+    PlatformShortcut("X", "https://x.com/"),
+    PlatformShortcut("Threads", "https://www.threads.net/"),
 )
 
 @Composable
@@ -168,58 +165,17 @@ fun MainScreen(
         viewModel.startDownload()
     }
 
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
-        bottomBar = {
-            NavigationBar(
-                containerColor = MaterialTheme.colorScheme.surface,
-                tonalElevation = 2.dp,
-            ) {
-                AppTab.entries.forEach { tab ->
-                    val selected = ui.activeTab == tab
-                    NavigationBarItem(
-                        selected = selected,
-                        onClick = { viewModel.onTabSelected(tab) },
-                        icon = {
-                            val icon = when (tab) {
-                                AppTab.DOWNLOADER -> Icons.Rounded.Home
-                                AppTab.HISTORY -> Icons.Rounded.History
-                                AppTab.SETTINGS -> Icons.Rounded.Settings
-                            }
-                            if (tab == AppTab.HISTORY && ui.history.isNotEmpty()) {
-                                BadgedBox(
-                                    badge = {
-                                        Badge {
-                                            Text(
-                                                text = if (ui.history.size > 99) "99+" else "${ui.history.size}",
-                                                style = MaterialTheme.typography.labelSmall,
-                                            )
-                                        }
-                                    },
-                                ) {
-                                    Icon(icon, contentDescription = tab.label)
-                                }
-                            } else {
-                                Icon(icon, contentDescription = tab.label)
-                            }
-                        },
-                        label = {
-                            Text(
-                                text = tab.label,
-                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-                                maxLines = 1,
-                            )
-                        },
-                    )
-                }
-            }
-        },
-    ) { innerPadding ->
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background),
+    ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(innerPadding)
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+                .statusBarsPadding()
+                .padding(horizontal = 16.dp)
+                .padding(top = 12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             // Compact Header
@@ -478,6 +434,16 @@ fun MainScreen(
                 )
             }
         }
+
+        FloatingBottomDock(
+            activeTab = ui.activeTab,
+            historyCount = ui.history.size,
+            onTabSelected = viewModel::onTabSelected,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .padding(horizontal = 24.dp, vertical = 10.dp),
+        )
     }
 
     if (showAccountsSheet) {
@@ -1073,7 +1039,7 @@ private fun HomeTab(
                 OutlinedTextField(
                     value = ui.url,
                     onValueChange = onUrlChanged,
-                    placeholder = { Text("Paste YouTube, Instagram, Facebook, Reddit, X…") },
+                    placeholder = { Text("Paste YouTube, Instagram, Facebook, X, Threads…") },
                     leadingIcon = {
                         Icon(Icons.Rounded.Link, contentDescription = null, modifier = Modifier.size(18.dp))
                     },
@@ -1165,48 +1131,37 @@ private fun HomeTab(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    QUICK_PLATFORMS.chunked(3).forEach { rowItems ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            rowItems.forEach { platform ->
-                                Surface(
-                                    shape = RoundedCornerShape(12.dp),
-                                    color = MaterialTheme.colorScheme.surfaceVariant,
-                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .clip(RoundedCornerShape(12.dp))
-                                        .clickable { onOpenUrl(platform.launchUrl) },
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        QUICK_PLATFORMS.forEach { platform ->
+                            Surface(
+                                shape = RoundedCornerShape(14.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant,
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .clickable { onOpenUrl(platform.launchUrl) },
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(vertical = 10.dp, horizontal = 4.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(6.dp),
                                 ) {
-                                    Column(
-                                        modifier = Modifier.padding(vertical = 10.dp, horizontal = 6.dp),
-                                        horizontalAlignment = Alignment.CenterHorizontally,
-                                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                                    ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .size(32.dp)
-                                                .clip(CircleShape)
-                                                .background(platform.accent.copy(alpha = 0.16f)),
-                                            contentAlignment = Alignment.Center,
-                                        ) {
-                                            Text(
-                                                text = platform.badge,
-                                                style = MaterialTheme.typography.labelMedium,
-                                                fontWeight = FontWeight.Bold,
-                                                color = platform.accent,
-                                            )
-                                        }
-                                        Text(
-                                            text = platform.name.substringBefore(" /"),
-                                            style = MaterialTheme.typography.labelSmall,
-                                            fontWeight = FontWeight.SemiBold,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                        )
-                                    }
+                                    PlatformLogo(
+                                        platform = platform.name,
+                                        modifier = Modifier.size(30.dp),
+                                    )
+                                    Text(
+                                        text = platform.name,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        softWrap = false,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
                                 }
                             }
                         }
@@ -1796,6 +1751,106 @@ private fun HomeTab(
                             }
                             Text(buttonText)
                         }
+                    }
+                }
+            }
+        }
+
+        Spacer(
+            modifier = Modifier
+                .navigationBarsPadding()
+                .height(82.dp),
+        )
+    }
+}
+
+@Composable
+private fun FloatingBottomDock(
+    activeTab: AppTab,
+    historyCount: Int,
+    onTabSelected: (AppTab) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        shape = RoundedCornerShape(32.dp),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.85f)),
+        shadowElevation = 12.dp,
+        modifier = modifier
+            .fillMaxWidth()
+            .height(60.dp),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(5.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            AppTab.entries.forEach { tab ->
+                val selected = activeTab == tab
+                val icon = when (tab) {
+                    AppTab.DOWNLOADER -> Icons.Rounded.Home
+                    AppTab.HISTORY -> Icons.Rounded.History
+                    AppTab.SETTINGS -> Icons.Rounded.Settings
+                }
+                val contentColor = if (selected) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                }
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .clip(RoundedCornerShape(27.dp))
+                        .background(
+                            if (selected) {
+                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.13f)
+                            } else {
+                                Color.Transparent
+                            },
+                        )
+                        .clickable { onTabSelected(tab) },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(1.dp),
+                    ) {
+                        if (tab == AppTab.HISTORY && historyCount > 0) {
+                            BadgedBox(
+                                badge = {
+                                    Badge {
+                                        Text(
+                                            text = if (historyCount > 99) "99+" else "$historyCount",
+                                            style = MaterialTheme.typography.labelSmall,
+                                        )
+                                    }
+                                },
+                            ) {
+                                Icon(
+                                    imageVector = icon,
+                                    contentDescription = tab.label,
+                                    tint = contentColor,
+                                    modifier = Modifier.size(20.dp),
+                                )
+                            }
+                        } else {
+                            Icon(
+                                imageVector = icon,
+                                contentDescription = tab.label,
+                                tint = contentColor,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
+                        Text(
+                            text = tab.label,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                            color = contentColor,
+                            maxLines = 1,
+                        )
                     }
                 }
             }

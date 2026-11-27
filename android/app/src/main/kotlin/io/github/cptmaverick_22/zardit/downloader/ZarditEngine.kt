@@ -110,6 +110,9 @@ object ZarditEngine {
         require(ZarditParser.isSafePublicUrl(rawUrl)) {
             "Enter a valid public http/https link (local or private network addresses are not allowed)."
         }
+        if (ZarditParser.isUnsupportedRedditUrl(rawUrl)) {
+            error("Reddit downloads were removed because Reddit now blocks automated access without login. Save Reddit videos directly in the official Reddit app.")
+        }
         val cleanUrl = normalizeAndResolveUrl(rawUrl, context)
         DiagnosticLog.log("Fetch", "URL resolved: $cleanUrl")
 

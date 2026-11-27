@@ -11,10 +11,11 @@ SUPPORTED_PLATFORMS = (
     ("YouTube", ("youtube.com", "youtu.be")),
     ("Instagram", ("instagram.com", "instagr.am")),
     ("Facebook", ("facebook.com", "fb.watch", "fb.com")),
-    ("Reddit", ("reddit.com", "redd.it", "v.redd.it")),
     ("X / Twitter", ("twitter.com", "x.com", "t.co")),
     ("Threads", ("threads.net", "threads.com")),
 )
+
+_REDDIT_DOMAINS = ("reddit.com", "redd.it", "v.redd.it")
 
 _URL_IN_TEXT = re.compile(r"https?://[^\s<>\"']+")
 _CGNAT_NET = ipaddress.ip_network("100.64.0.0/10")
@@ -32,6 +33,17 @@ def is_cropped_thumb_url(url):
 
 def host_matches(hostname, domain):
     return hostname == domain or hostname.endswith(f".{domain}")
+
+
+def is_unsupported_reddit_url(url):
+    """True when URL points to Reddit (removed due to Reddit login/anti-bot blocking)."""
+
+    try:
+        hostname = (urlparse(str(url or "").strip()).hostname or "").lower()
+    except ValueError:
+        return False
+
+    return any(host_matches(hostname, domain) for domain in _REDDIT_DOMAINS)
 
 
 def detect_platform(url):

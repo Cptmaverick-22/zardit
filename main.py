@@ -383,7 +383,7 @@ def read_clipboard_text():
 def get_url():
     raw = prompt_line(
         "Media URL",
-        hint="YouTube/IG/FB/Reddit/X/Threads, P = paste, Q = cancel",
+        hint="YouTube/IG/FB/X/Threads, P = paste, Q = cancel",
     )
 
     if not raw or raw.lower() == "q":
@@ -754,7 +754,7 @@ def show_menu():
     meta.add_row("IG Auth", f"[muted]{escape(ig_status)}[/]")
     meta.add_row("License", f"[muted]{escape(APP_LICENSE)}[/]")
     if not compact:
-        meta.add_row("Sites", "[muted]YouTube · Instagram · Facebook · Reddit · X · Threads[/]")
+        meta.add_row("Sites", "[muted]YouTube · Instagram · Facebook · X · Threads[/]")
 
     ffmpeg_pill = "[pill.ok]FFmpeg ✔[/]" if ffmpeg_ok else "[pill.warn]FFmpeg missing[/]"
     deno_pill = "[pill.ok]Deno ✔[/]" if deno_ok else "[pill.warn]Deno missing[/]"

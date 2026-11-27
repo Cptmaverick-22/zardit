@@ -33,4 +33,12 @@ class FfmpegAddonManagerTest {
     fun `app tabs include Home, History, and Settings`() {
         assertEquals(listOf("Home", "History", "Settings"), AppTab.entries.map { it.label })
     }
+
+    @Test
+    fun `reddit urls are flagged as unsupported`() {
+        assertTrue(ZarditParser.isUnsupportedRedditUrl("https://www.reddit.com/r/videos/comments/abc/"))
+        assertTrue(ZarditParser.isUnsupportedRedditUrl("https://v.redd.it/xyz123"))
+        assertFalse(ZarditParser.isUnsupportedRedditUrl("https://www.threads.net/@user/post/abc"))
+        assertEquals("Web", ZarditParser.detectPlatformName("https://www.reddit.com/r/videos/comments/abc/"))
+    }
 }

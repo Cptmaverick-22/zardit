@@ -41,7 +41,6 @@ Media extraction depends on upstream platforms and the extractors shipped in you
 | **YouTube** | MP4 (`144p`–`2160p` desktop / up to `1080p+` Android) + Playlists | MP3 (desktop) / M4A | Thumbnails (`Original` / PNG / JPG / WebP) | Deno recommended on desktop for JS challenges |
 | **Instagram** | Reels & Posts | MP3 (desktop) / Original | Single photos, thumbnails & carousels | Private/follow-only posts require local **IG** setup |
 | **Facebook** | Videos & Reels | MP3 (desktop) / Original | Single & Multi-photo posts | Availability varies on login-gated posts |
-| **Reddit** | Videos | MP3 (desktop) / Original | Single & Gallery images | — |
 | **X (Twitter)** | Videos | MP3 (desktop) / Original | Images | Some posts require session/upstream updates |
 | **Threads** | Videos (including `/share/` links) | MP3 (desktop) / Original | Images & Carousels | Higher DASH tiers shown when exposed |
 
@@ -224,7 +223,7 @@ Start it with `zardit-cli`, `./Zardit-*-x86_64.AppImage --cli`, or `python main.
   │  Theme    Auto (Dark)                                                      │
   │  IG Auth  Mozilla Firefox                                                  │
   │  License  GPL-3.0-or-later                                                 │
-  │  Sites    YouTube · Instagram · Facebook · Reddit · X · Threads            │
+  │  Sites    YouTube · Instagram · Facebook · X · Threads                     │
   │  Tools    FFmpeg ✔   Deno ✔                                                │
   │  ────────────────────────────────────────────────────────────────────────  │
   │    [1]    Download Video                              Single video as MP4  │
@@ -414,7 +413,7 @@ Priorities may shift as upstream platforms change; listed items are goals rather
 
 ## 📜 Legal and Responsible Use
 
-Zardit is intended only for downloading media you own, have permission to download, or are legally authorized to save. Respect copyright laws and platform Terms of Service. Zardit is not affiliated with, endorsed by, or sponsored by YouTube, Instagram, Facebook, Reddit, X, or Threads.
+Zardit is intended only for downloading media you own, have permission to download, or are legally authorized to save. Respect copyright laws and platform Terms of Service. Zardit is not affiliated with, endorsed by, or sponsored by YouTube, Instagram, Facebook, X, or Threads.
 
 ## License
 

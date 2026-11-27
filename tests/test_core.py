@@ -8,7 +8,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from zardit_core.urls import has_private_dns_resolution
+from zardit_core.urls import has_private_dns_resolution, is_unsupported_reddit_url
 from downloader import (
     DownloadCancelled,
     DownloadError,
@@ -149,8 +149,6 @@ class LinkTests(unittest.TestCase):
             ("https://www.instagram.com/reel/C12345/", "Instagram"),
             ("https://www.facebook.com/watch/?v=12345", "Facebook"),
             ("https://fb.watch/abc123/", "Facebook"),
-            ("https://www.reddit.com/r/python/comments/abc/title/", "Reddit"),
-            ("https://v.redd.it/xyz123", "Reddit"),
             ("https://x.com/user/status/12345", "X / Twitter"),
             ("https://twitter.com/user/status/12345", "X / Twitter"),
             ("https://www.threads.net/@user/post/abc", "Threads"),
@@ -160,6 +158,10 @@ class LinkTests(unittest.TestCase):
             with self.subTest(url=url):
                 self.assertTrue(validate_url(url))
                 self.assertEqual(detect_platform(url), platform)
+
+        self.assertTrue(is_unsupported_reddit_url("https://www.reddit.com/r/python/comments/abc/title/"))
+        self.assertTrue(is_unsupported_reddit_url("https://v.redd.it/xyz123"))
+        self.assertFalse(is_unsupported_reddit_url("https://www.threads.net/@user/post/abc"))
 
         for bad in (
             "",
