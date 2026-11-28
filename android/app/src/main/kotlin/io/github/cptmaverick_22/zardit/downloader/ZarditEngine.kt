@@ -2029,11 +2029,15 @@ object ZarditEngine {
         customTitle: String? = null,
         formatId: String? = null,
         needsAudioMux: Boolean = false,
+        resumeDir: File? = null,
+        shouldKeepWorkDirOnExit: () -> Boolean = { false },
         onProgress: (Float, String) -> Unit,
     ): SaveResult {
         val qTag = qualityTag(mode, videoHeight, audioOption)
-        val workDir = File(context.cacheDir, "zardit_dl_$processId").apply {
-            deleteRecursively()
+        val workDir = (resumeDir ?: File(context.cacheDir, "zardit_dl_$processId")).apply {
+            if (resumeDir == null) {
+                deleteRecursively()
+            }
             mkdirs()
         }
 
@@ -2081,6 +2085,7 @@ object ZarditEngine {
             }
 
             fun runRequest(req: YoutubeDLRequest) {
+                req.addOption("-c")
                 val platform = detectPlatformName(url)
                 if (platform == "Facebook" && FacebookAuth.hasSession(context)) {
                     FacebookAuth.withTempCookieFile(context) { cookieFile ->
@@ -2206,7 +2211,9 @@ object ZarditEngine {
 
             return saveOutputFile(context, outputFile, mode, treeUri)
         } finally {
-            workDir.deleteRecursively()
+            if (!shouldKeepWorkDirOnExit()) {
+                workDir.deleteRecursively()
+            }
         }
     }
 

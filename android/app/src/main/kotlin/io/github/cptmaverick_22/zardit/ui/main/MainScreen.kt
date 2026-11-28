@@ -8,6 +8,13 @@ import android.os.Build
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -45,6 +52,7 @@ import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.OpenInNew
+import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Settings
@@ -73,6 +81,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -81,7 +90,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -166,6 +179,24 @@ fun MainScreen(
         viewModel.startDownload()
     }
 
+    var dockVisible by remember { mutableStateOf(true) }
+    val hasActiveTransfer = downloadState is DownloadState.Running || downloadState is DownloadState.Paused
+    LaunchedEffect(ui.activeTab, hasActiveTransfer) {
+        dockVisible = true
+    }
+    val nestedScrollConnection = remember {
+        object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                if (available.y < -10f) {
+                    dockVisible = false
+                } else if (available.y > 10f) {
+                    dockVisible = true
+                }
+                return Offset.Zero
+            }
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -202,13 +233,13 @@ fun MainScreen(
                     }
                     Text(
                         text = when (ui.activeTab) {
-                            AppTab.DOWNLOADER -> "Download from any platform cleanly"
+                            AppTab.DOWNLOADER -> "Save videos, audio & photos"
                             AppTab.HISTORY -> "Saved videos, audio & images"
                             AppTab.SETTINGS -> "Preferences, addons & updates"
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
+                        maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
@@ -327,124 +358,143 @@ fun MainScreen(
                 }
             }
 
-            when (ui.activeTab) {
-                AppTab.DOWNLOADER -> HomeTab(
-                    ui = ui,
-                    downloadState = downloadState,
-                    onUrlChanged = viewModel::onUrlChanged,
-                    onPasteAndFetch = {
-                        @Suppress("DEPRECATION")
-                        val pasted = clipboard.getText()?.text?.trim().orEmpty()
-                        if (pasted.isNotEmpty()) {
-                            viewModel.onUrlChanged(pasted)
-                            viewModel.fetch(pasted)
-                        }
-                    },
-                    onFetch = { viewModel.fetch() },
-                    onCopyDiagnostics = {
-                        @Suppress("DEPRECATION")
-                        clipboard.setText(AnnotatedString(viewModel.buildDiagnosticReport()))
-                        viewModel.showDiagnosticsCopiedBanner()
-                    },
-                    onToggleImage = viewModel::toggleImageIndex,
-                    onSelectAllImages = viewModel::selectAllImages,
-                    onSelectNoneImages = viewModel::selectNoneImages,
-                    onTogglePlaylist = viewModel::togglePlaylistIndex,
-                    onSelectAllPlaylist = viewModel::selectAllPlaylist,
-                    onSelectNonePlaylist = viewModel::selectNonePlaylist,
-                    onPlaylistRangeChanged = viewModel::onPlaylistRangeChanged,
-                    onDownloadModeSelected = viewModel::onDownloadModeSelected,
-                    onVideoHeightSelected = viewModel::onVideoHeightSelected,
-                    onAudioOptionSelected = viewModel::onAudioOptionSelected,
-                    onImageFormatSelected = viewModel::onImageFormatSelected,
-                    onPickFolder = { folderPickerLauncher.launch(null) },
-                    onResetFolder = { viewModel.resetFolder() },
-                    onTriggerDownload = { triggerDownload() },
-                    onCancelDownload = { viewModel.cancelDownload() },
-                    onOpenUrl = { launchUrl ->
-                        runCatching {
-                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(launchUrl)))
-                        }
-                    },
-                    onOpenHistoryItem = { item -> openHistoryMedia(context, item) },
-                    onViewAllHistory = { viewModel.onTabSelected(AppTab.HISTORY) },
-                    onOpenCompleted = { uriStr, fileName ->
-                        openHistoryMedia(
-                            context,
-                            HistoryItem(
-                                id = "",
-                                mediaId = "",
-                                title = "",
-                                platform = "",
-                                qualityLabel = "",
-                                fileName = fileName,
-                                savedLocation = "",
-                                contentUri = uriStr,
-                                timestampMs = 0L,
-                            ),
-                        )
-                    },
-                    onShareCompleted = { uriStr ->
-                        shareHistoryMedia(
-                            context,
-                            HistoryItem(
-                                id = "",
-                                mediaId = "",
-                                title = "",
-                                platform = "",
-                                qualityLabel = "",
-                                fileName = "",
-                                savedLocation = "",
-                                contentUri = uriStr,
-                                timestampMs = 0L,
-                            ),
-                        )
-                    },
-                    modifier = Modifier.weight(1f),
-                )
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .nestedScroll(nestedScrollConnection),
+            ) {
+                when (ui.activeTab) {
+                    AppTab.DOWNLOADER -> HomeTab(
+                        ui = ui,
+                        downloadState = downloadState,
+                        onUrlChanged = viewModel::onUrlChanged,
+                        onPasteAndFetch = {
+                            @Suppress("DEPRECATION")
+                            val pasted = clipboard.getText()?.text?.trim().orEmpty()
+                            if (pasted.isNotEmpty()) {
+                                viewModel.onUrlChanged(pasted)
+                                viewModel.fetch(pasted)
+                            }
+                        },
+                        onFetch = { viewModel.fetch() },
+                        onCopyDiagnostics = {
+                            @Suppress("DEPRECATION")
+                            clipboard.setText(AnnotatedString(viewModel.buildDiagnosticReport()))
+                            viewModel.showDiagnosticsCopiedBanner()
+                        },
+                        onToggleImage = viewModel::toggleImageIndex,
+                        onSelectAllImages = viewModel::selectAllImages,
+                        onSelectNoneImages = viewModel::selectNoneImages,
+                        onTogglePlaylist = viewModel::togglePlaylistIndex,
+                        onSelectAllPlaylist = viewModel::selectAllPlaylist,
+                        onSelectNonePlaylist = viewModel::selectNonePlaylist,
+                        onPlaylistRangeChanged = viewModel::onPlaylistRangeChanged,
+                        onDownloadModeSelected = viewModel::onDownloadModeSelected,
+                        onVideoHeightSelected = viewModel::onVideoHeightSelected,
+                        onAudioOptionSelected = viewModel::onAudioOptionSelected,
+                        onImageFormatSelected = viewModel::onImageFormatSelected,
+                        onPickFolder = { folderPickerLauncher.launch(null) },
+                        onResetFolder = { viewModel.resetFolder() },
+                        onTriggerDownload = { triggerDownload() },
+                        onPauseDownload = { viewModel.pauseDownload() },
+                        onResumeDownload = { viewModel.resumeDownload() },
+                        onCancelDownload = { viewModel.cancelDownload() },
+                        onOpenUrl = { launchUrl ->
+                            runCatching {
+                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(launchUrl)))
+                            }
+                        },
+                        onOpenHistoryItem = { item -> openHistoryMedia(context, item) },
+                        onViewAllHistory = { viewModel.onTabSelected(AppTab.HISTORY) },
+                        onOpenCompleted = { uriStr, fileName ->
+                            openHistoryMedia(
+                                context,
+                                HistoryItem(
+                                    id = "",
+                                    mediaId = "",
+                                    title = "",
+                                    platform = "",
+                                    qualityLabel = "",
+                                    fileName = fileName,
+                                    savedLocation = "",
+                                    contentUri = uriStr,
+                                    timestampMs = 0L,
+                                ),
+                            )
+                        },
+                        onShareCompleted = { uriStr ->
+                            shareHistoryMedia(
+                                context,
+                                HistoryItem(
+                                    id = "",
+                                    mediaId = "",
+                                    title = "",
+                                    platform = "",
+                                    qualityLabel = "",
+                                    fileName = "",
+                                    savedLocation = "",
+                                    contentUri = uriStr,
+                                    timestampMs = 0L,
+                                ),
+                            )
+                        },
+                        modifier = Modifier.fillMaxSize(),
+                    )
 
-                AppTab.HISTORY -> HistoryTab(
-                    items = ui.history,
-                    onOpen = { item -> openHistoryMedia(context, item) },
-                    onShare = { item -> shareHistoryMedia(context, item) },
-                    onRemove = { item -> pendingDeleteItem = item },
-                    onClearAll = { showClearAllConfirm = true },
-                    modifier = Modifier.weight(1f),
-                )
+                    AppTab.HISTORY -> HistoryTab(
+                        items = ui.history,
+                        onOpen = { item -> openHistoryMedia(context, item) },
+                        onShare = { item -> shareHistoryMedia(context, item) },
+                        onRemove = { item -> pendingDeleteItem = item },
+                        onClearAll = { showClearAllConfirm = true },
+                        modifier = Modifier.fillMaxSize(),
+                    )
 
-                AppTab.SETTINGS -> SettingsTab(
-                    ui = ui,
-                    onPickFolder = { folderPickerLauncher.launch(null) },
-                    onResetFolder = { viewModel.resetFolder() },
-                    onDefaultQualitySelected = viewModel::setDefaultVideoQuality,
-                    onWifiOnlyChanged = viewModel::setWifiOnlyDownloads,
-                    onThemeModeSelected = viewModel::onThemeModeSelected,
-                    onManageAccounts = { showAccountsSheet = true },
-                    onInstallFfmpeg = viewModel::installFfmpegAddon,
-                    onRemoveFfmpeg = viewModel::removeFfmpegAddon,
-                    onOpenUpdates = { showUpdatesSheet = true },
-                    onAutoCheckUpdatesChanged = viewModel::setAutoCheckUpdates,
-                    onUpdateYtDlp = viewModel::updateYtDlp,
-                    onCopyDiagnostics = {
-                        @Suppress("DEPRECATION")
-                        clipboard.setText(AnnotatedString(viewModel.buildDiagnosticReport()))
-                        viewModel.showDiagnosticsCopiedBanner()
-                    },
-                    onClearHistory = { showClearAllConfirm = true },
-                    modifier = Modifier.weight(1f),
-                )
+                    AppTab.SETTINGS -> SettingsTab(
+                        ui = ui,
+                        onPickFolder = { folderPickerLauncher.launch(null) },
+                        onResetFolder = { viewModel.resetFolder() },
+                        onDefaultQualitySelected = viewModel::setDefaultVideoQuality,
+                        onWifiOnlyChanged = viewModel::setWifiOnlyDownloads,
+                        onThemeModeSelected = viewModel::onThemeModeSelected,
+                        onManageAccounts = { showAccountsSheet = true },
+                        onInstallFfmpeg = viewModel::installFfmpegAddon,
+                        onRemoveFfmpeg = viewModel::removeFfmpegAddon,
+                        onOpenUpdates = { showUpdatesSheet = true },
+                        onAutoCheckUpdatesChanged = viewModel::setAutoCheckUpdates,
+                        onUpdateYtDlp = viewModel::updateYtDlp,
+                        onCopyDiagnostics = {
+                            @Suppress("DEPRECATION")
+                            clipboard.setText(AnnotatedString(viewModel.buildDiagnosticReport()))
+                            viewModel.showDiagnosticsCopiedBanner()
+                        },
+                        onClearHistory = { showClearAllConfirm = true },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
             }
         }
 
-        FloatingBottomDock(
-            activeTab = ui.activeTab,
-            historyCount = ui.history.size,
-            onTabSelected = viewModel::onTabSelected,
+        AnimatedVisibility(
+            visible = dockVisible,
+            enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+            exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .navigationBarsPadding()
-                .padding(horizontal = 24.dp, vertical = 10.dp),
-        )
+                .padding(horizontal = 20.dp, vertical = 10.dp),
+        ) {
+            FloatingBottomDock(
+                activeTab = ui.activeTab,
+                historyCount = ui.history.size,
+                downloadState = downloadState,
+                activeThumbnailUrl = ui.preview?.thumbnailUrl,
+                onTabSelected = viewModel::onTabSelected,
+                onPauseDownload = viewModel::pauseDownload,
+                onResumeDownload = viewModel::resumeDownload,
+            )
+        }
     }
 
     if (showAccountsSheet) {
@@ -985,6 +1035,8 @@ private fun HomeTab(
     onPickFolder: () -> Unit,
     onResetFolder: () -> Unit,
     onTriggerDownload: () -> Unit,
+    onPauseDownload: () -> Unit,
+    onResumeDownload: () -> Unit,
     onCancelDownload: () -> Unit,
     onOpenUrl: (String) -> Unit,
     onOpenHistoryItem: (HistoryItem) -> Unit,
@@ -1573,6 +1625,7 @@ private fun HomeTab(
 
         // Save folder + Download / Progress Card (shown when a preview or active/completed download exists)
         val isRunning = downloadState is DownloadState.Running
+        val isPaused = downloadState is DownloadState.Paused
         val isJustCompleted = downloadState is DownloadState.Completed
         if (ui.preview != null || downloadState !is DownloadState.Idle) {
             Card(
@@ -1664,7 +1717,63 @@ private fun HomeTab(
                                     overflow = TextOverflow.Ellipsis,
                                     modifier = Modifier.weight(1f),
                                 )
-                                OutlinedButton(onClick = onCancelDownload) {
+                                OutlinedButton(
+                                    onClick = onPauseDownload,
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                ) {
+                                    Icon(
+                                        Icons.Rounded.Pause,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp),
+                                    )
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("Pause", maxLines = 1)
+                                }
+                                OutlinedButton(
+                                    onClick = onCancelDownload,
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                ) {
+                                    Text("Cancel", maxLines = 1)
+                                }
+                            }
+                        }
+
+                        is DownloadState.Paused -> {
+                            if (state.progressPercent > 0f) {
+                                LinearProgressIndicator(
+                                    progress = { (state.progressPercent / 100f).coerceIn(0f, 1f) },
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    text = "Paused · ${state.statusLine}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Button(
+                                    onClick = onResumeDownload,
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                ) {
+                                    Icon(
+                                        Icons.Rounded.PlayArrow,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp),
+                                    )
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("Resume", maxLines = 1)
+                                }
+                                OutlinedButton(
+                                    onClick = onCancelDownload,
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                ) {
                                     Text("Cancel", maxLines = 1)
                                 }
                             }
@@ -1725,7 +1834,7 @@ private fun HomeTab(
                         DownloadState.Idle -> Unit
                     }
 
-                    if (!isRunning && ui.preview != null && !isJustCompleted) {
+                    if (!isRunning && !isPaused && ui.preview != null && !isJustCompleted) {
                         val alreadyDownloaded = ui.existingDownloadPath != null
                         val playlistEmpty = ui.preview.isPlaylist && ui.selectedPlaylistIndices.isEmpty()
                         val imagesEmpty = ui.downloadMode == DownloadMode.IMAGE &&
@@ -1772,89 +1881,255 @@ private fun HomeTab(
 private fun FloatingBottomDock(
     activeTab: AppTab,
     historyCount: Int,
+    downloadState: DownloadState,
+    activeThumbnailUrl: String?,
     onTabSelected: (AppTab) -> Unit,
+    onPauseDownload: () -> Unit,
+    onResumeDownload: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Surface(
-        shape = RoundedCornerShape(32.dp),
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.85f)),
-        shadowElevation = 12.dp,
-        modifier = modifier
-            .fillMaxWidth()
-            .height(60.dp),
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(5.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            AppTab.entries.forEach { tab ->
-                val selected = activeTab == tab
-                val icon = when (tab) {
-                    AppTab.DOWNLOADER -> Icons.Rounded.Home
-                    AppTab.HISTORY -> Icons.Rounded.History
-                    AppTab.SETTINGS -> Icons.Rounded.Settings
+    val isActiveTransfer = downloadState is DownloadState.Running || downloadState is DownloadState.Paused
+
+    AnimatedContent(
+        targetState = isActiveTransfer,
+        transitionSpec = { fadeIn() togetherWith fadeOut() },
+        label = "floating_dock_morph",
+        modifier = modifier.fillMaxWidth(),
+    ) { downloading ->
+        if (downloading) {
+            val title = when (downloadState) {
+                is DownloadState.Running -> downloadState.title
+                is DownloadState.Paused -> downloadState.title
+                else -> "Downloading"
+            }
+            val progress = when (downloadState) {
+                is DownloadState.Running -> downloadState.progressPercent
+                is DownloadState.Paused -> downloadState.progressPercent
+                else -> 0f
+            }
+            val subtitle = when (downloadState) {
+                is DownloadState.Running -> downloadState.statusLine
+                is DownloadState.Paused -> "Paused · ${downloadState.progressPercent.toInt()}%"
+                else -> ""
+            }
+            val isPausedState = downloadState is DownloadState.Paused
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                // Circular Home pill
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+                    border = BorderStroke(
+                        1.dp,
+                        if (activeTab == AppTab.DOWNLOADER) {
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.65f)
+                        } else {
+                            MaterialTheme.colorScheme.outline.copy(alpha = 0.85f)
+                        },
+                    ),
+                    shadowElevation = 12.dp,
+                    modifier = Modifier
+                        .size(58.dp)
+                        .clip(CircleShape)
+                        .clickable { onTabSelected(AppTab.DOWNLOADER) },
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Rounded.Home,
+                            contentDescription = "Home",
+                            tint = if (activeTab == AppTab.DOWNLOADER) {
+                                MaterialTheme.colorScheme.onSurface
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            modifier = Modifier.size(24.dp),
+                        )
+                    }
                 }
-                val contentColor = if (selected) {
-                    MaterialTheme.colorScheme.onSurface
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                }
-                Box(
+
+                // Active transfer pill (thumbnail + title/progress + pause/resume button)
+                Surface(
+                    shape = RoundedCornerShape(30.dp),
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.85f)),
+                    shadowElevation = 12.dp,
                     modifier = Modifier
                         .weight(1f)
-                        .fillMaxHeight()
-                        .clip(RoundedCornerShape(27.dp))
-                        .background(
-                            if (selected) {
-                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.13f)
-                            } else {
-                                Color.Transparent
-                            },
-                        )
-                        .clickable { onTabSelected(tab) },
-                    contentAlignment = Alignment.Center,
+                        .height(58.dp)
+                        .clip(RoundedCornerShape(30.dp))
+                        .clickable { onTabSelected(AppTab.DOWNLOADER) },
                 ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(1.dp),
+                    Row(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(start = 8.dp, end = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
-                        if (tab == AppTab.HISTORY && historyCount > 0) {
-                            BadgedBox(
-                                badge = {
-                                    Badge {
-                                        Text(
-                                            text = if (historyCount > 99) "99+" else "$historyCount",
-                                            style = MaterialTheme.typography.labelSmall,
-                                        )
-                                    }
-                                },
+                        if (!activeThumbnailUrl.isNullOrBlank()) {
+                            AsyncImage(
+                                model = activeThumbnailUrl,
+                                contentDescription = title,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .size(42.dp)
+                                    .clip(RoundedCornerShape(10.dp)),
+                            )
+                        } else {
+                            Box(
+                                modifier = Modifier
+                                    .size(42.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(MaterialTheme.colorScheme.primaryContainer),
+                                contentAlignment = Alignment.Center,
                             ) {
                                 Icon(
-                                    imageVector = icon,
-                                    contentDescription = tab.label,
-                                    tint = contentColor,
+                                    imageVector = Icons.Rounded.Download,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
                                     modifier = Modifier.size(20.dp),
                                 )
                             }
-                        } else {
+                        }
+
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                        ) {
+                            Text(
+                                text = title.ifBlank { "Zardit Download" },
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                text = subtitle,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            if (progress > 0f) {
+                                LinearProgressIndicator(
+                                    progress = { (progress / 100f).coerceIn(0f, 1f) },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(2.dp)
+                                        .clip(RoundedCornerShape(1.dp)),
+                                )
+                            } else {
+                                LinearProgressIndicator(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(2.dp)
+                                        .clip(RoundedCornerShape(1.dp)),
+                                )
+                            }
+                        }
+
+                        IconButton(
+                            onClick = { if (isPausedState) onResumeDownload() else onPauseDownload() },
+                            modifier = Modifier.size(42.dp),
+                        ) {
                             Icon(
-                                imageVector = icon,
-                                contentDescription = tab.label,
-                                tint = contentColor,
-                                modifier = Modifier.size(20.dp),
+                                imageVector = if (isPausedState) Icons.Rounded.PlayArrow else Icons.Rounded.Pause,
+                                contentDescription = if (isPausedState) "Resume download" else "Pause download",
+                                tint = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.size(24.dp),
                             )
                         }
-                        Text(
-                            text = tab.label,
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                            color = contentColor,
-                            maxLines = 1,
-                        )
+                    }
+                }
+            }
+        } else {
+            Surface(
+                shape = RoundedCornerShape(32.dp),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.85f)),
+                shadowElevation = 12.dp,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(60.dp),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(5.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    AppTab.entries.forEach { tab ->
+                        val selected = activeTab == tab
+                        val icon = when (tab) {
+                            AppTab.DOWNLOADER -> Icons.Rounded.Home
+                            AppTab.HISTORY -> Icons.Rounded.History
+                            AppTab.SETTINGS -> Icons.Rounded.Settings
+                        }
+                        val contentColor = if (selected) {
+                            MaterialTheme.colorScheme.onSurface
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .clip(RoundedCornerShape(27.dp))
+                                .background(
+                                    if (selected) {
+                                        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.13f)
+                                    } else {
+                                        Color.Transparent
+                                    },
+                                )
+                                .clickable { onTabSelected(tab) },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(1.dp),
+                            ) {
+                                if (tab == AppTab.HISTORY && historyCount > 0) {
+                                    BadgedBox(
+                                        badge = {
+                                            Badge {
+                                                Text(
+                                                    text = if (historyCount > 99) "99+" else "$historyCount",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                )
+                                            }
+                                        },
+                                    ) {
+                                        Icon(
+                                            imageVector = icon,
+                                            contentDescription = tab.label,
+                                            tint = contentColor,
+                                            modifier = Modifier.size(20.dp),
+                                        )
+                                    }
+                                } else {
+                                    Icon(
+                                        imageVector = icon,
+                                        contentDescription = tab.label,
+                                        tint = contentColor,
+                                        modifier = Modifier.size(20.dp),
+                                    )
+                                }
+                                Text(
+                                    text = tab.label,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                    color = contentColor,
+                                    maxLines = 1,
+                                )
+                            }
+                        }
                     }
                 }
             }

@@ -21,6 +21,7 @@ import io.github.cptmaverick_22.zardit.downloader.DownloadMode
 import io.github.cptmaverick_22.zardit.downloader.DownloadState
 import io.github.cptmaverick_22.zardit.downloader.ImageFormat
 import io.github.cptmaverick_22.zardit.downloader.ZarditEngine
+import java.io.File
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineScope
@@ -39,15 +40,47 @@ class DownloadService : Service() {
     private var activeJob: Job? = null
     private var activeProcessId: String? = null
     private val cancelled = AtomicBoolean(false)
+    private val paused = AtomicBoolean(false)
+    private var lastTitle: String = "Zardit Download"
+    private var lastPct: Float = 0f
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_CANCEL -> {
-                cancelled.set(true)
+            ACTION_PAUSE -> {
+                paused.set(true)
                 activeProcessId?.let { ZarditEngine.cancel(it) }
                 activeJob?.cancel()
+                val pct = lastPct
+                _state.value = DownloadState.Paused(
+                    title = lastTitle,
+                    progressPercent = pct,
+                    statusLine = if (pct > 0f) "Paused · ${pct.toInt()}%" else "Paused",
+                )
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+                return START_NOT_STICKY
+            }
+
+            ACTION_RESUME -> {
+                val resumeIntent = lastStartIntent
+                if (resumeIntent != null) {
+                    return onStartCommand(resumeIntent, flags, startId)
+                }
+                _state.value = DownloadState.Cancelled
+                stopSelf()
+                return START_NOT_STICKY
+            }
+
+            ACTION_CANCEL -> {
+                cancelled.set(true)
+                paused.set(false)
+                activeProcessId?.let { ZarditEngine.cancel(it) }
+                activeJob?.cancel()
+                pausedWorkDir?.deleteRecursively()
+                pausedWorkDir = null
+                lastStartIntent = null
                 _state.value = DownloadState.Cancelled
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
@@ -55,6 +88,7 @@ class DownloadService : Service() {
             }
 
             ACTION_START -> {
+                val isResume = intent.getBooleanExtra(EXTRA_IS_RESUME, false)
                 val url = intent.getStringExtra(EXTRA_URL) ?: return START_NOT_STICKY
                 val mediaId = intent.getStringExtra(EXTRA_MEDIA_ID) ?: ""
                 val title = intent.getStringExtra(EXTRA_TITLE) ?: "Zardit Download"
@@ -79,6 +113,12 @@ class DownloadService : Service() {
                 val formatId = intent.getStringExtra(EXTRA_FORMAT_ID)
                 val needsAudioMux = intent.getBooleanExtra(EXTRA_NEEDS_AUDIO_MUX, false)
 
+                if (!isResume) {
+                    pausedWorkDir?.deleteRecursively()
+                    pausedWorkDir = File(applicationContext.cacheDir, "zardit_dl_work_${mediaId.hashCode()}")
+                }
+                lastStartIntent = Intent(intent).apply { putExtra(EXTRA_IS_RESUME, true) }
+
                 startDownload(
                     url = url,
                     mediaId = mediaId,
@@ -100,6 +140,7 @@ class DownloadService : Service() {
                     customTitle = customTitle,
                     formatId = formatId,
                     needsAudioMux = needsAudioMux,
+                    resumeWorkDir = if (isResume) pausedWorkDir else null,
                 )
             }
         }
@@ -127,9 +168,13 @@ class DownloadService : Service() {
         customTitle: String?,
         formatId: String?,
         needsAudioMux: Boolean,
+        resumeWorkDir: File? = null,
     ) {
         ensureNotificationChannel()
         cancelled.set(false)
+        paused.set(false)
+        lastTitle = title
+        if (resumeWorkDir == null) lastPct = 0f
 
         val initialNotification = buildNotification(
             title = title,
@@ -321,6 +366,7 @@ class DownloadService : Service() {
 
                 val pid = UUID.randomUUID().toString()
                 activeProcessId = pid
+                val activeWorkDir = resumeWorkDir ?: pausedWorkDir
                 val saved = ZarditEngine.download(
                     context = applicationContext,
                     url = url,
@@ -335,11 +381,16 @@ class DownloadService : Service() {
                     customTitle = customTitle,
                     formatId = formatId,
                     needsAudioMux = needsAudioMux,
+                    resumeDir = activeWorkDir,
+                    shouldKeepWorkDirOnExit = { paused.get() },
                 ) { pct, statusLine ->
                     updateProgress(title, pct, statusLine)
                 }
 
-                if (!cancelled.get()) {
+                if (!cancelled.get() && !paused.get()) {
+                    pausedWorkDir?.deleteRecursively()
+                    pausedWorkDir = null
+                    lastStartIntent = null
                     val historyId = "${mediaId}_${qTag}_$ext"
                     val thumbPath = ZarditEngine.cacheHistoryThumbnail(applicationContext, historyId, thumbnailUrl)
                     historyStore.add(
@@ -366,7 +417,9 @@ class DownloadService : Service() {
                     )
                 }
             } catch (t: Throwable) {
-                if (!cancelled.get()) {
+                if (!cancelled.get() && !paused.get()) {
+                    pausedWorkDir?.deleteRecursively()
+                    pausedWorkDir = null
                     DiagnosticLog.log("DownloadErr", t.message ?: t::class.java.simpleName)
                     val msg = t.message?.take(200) ?: "Download failed."
                     _state.value = DownloadState.Failed(msg)
@@ -390,7 +443,8 @@ class DownloadService : Service() {
     }
 
     private fun updateProgress(title: String, pct: Float, statusLine: String) {
-        if (cancelled.get()) return
+        if (cancelled.get() || paused.get()) return
+        lastPct = pct
         _state.value = DownloadState.Running(
             title = title,
             progressPercent = pct,
@@ -497,7 +551,10 @@ class DownloadService : Service() {
         private const val NOTIFICATION_ID = 1001
 
         private const val ACTION_START = "io.github.cptmaverick_22.zardit.action.START"
+        private const val ACTION_PAUSE = "io.github.cptmaverick_22.zardit.action.PAUSE"
+        private const val ACTION_RESUME = "io.github.cptmaverick_22.zardit.action.RESUME"
         private const val ACTION_CANCEL = "io.github.cptmaverick_22.zardit.action.CANCEL"
+        private const val EXTRA_IS_RESUME = "extra_is_resume"
         private const val EXTRA_URL = "extra_url"
         private const val EXTRA_MEDIA_ID = "extra_media_id"
         private const val EXTRA_TITLE = "extra_title"
@@ -522,8 +579,14 @@ class DownloadService : Service() {
         private val _state = MutableStateFlow<DownloadState>(DownloadState.Idle)
         val state: StateFlow<DownloadState> = _state.asStateFlow()
 
+        @Volatile
+        private var lastStartIntent: Intent? = null
+
+        @Volatile
+        private var pausedWorkDir: File? = null
+
         fun resetState() {
-            if (_state.value !is DownloadState.Running) {
+            if (_state.value !is DownloadState.Running && _state.value !is DownloadState.Paused) {
                 _state.value = DownloadState.Idle
             }
         }
@@ -573,6 +636,24 @@ class DownloadService : Service() {
                 putExtra(EXTRA_CUSTOM_TITLE, customTitle)
                 putExtra(EXTRA_FORMAT_ID, formatId)
                 putExtra(EXTRA_NEEDS_AUDIO_MUX, needsAudioMux)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        }
+
+        fun pause(context: Context) {
+            val intent = Intent(context, DownloadService::class.java).apply {
+                action = ACTION_PAUSE
+            }
+            context.startService(intent)
+        }
+
+        fun resume(context: Context) {
+            val intent = Intent(context, DownloadService::class.java).apply {
+                action = ACTION_RESUME
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)

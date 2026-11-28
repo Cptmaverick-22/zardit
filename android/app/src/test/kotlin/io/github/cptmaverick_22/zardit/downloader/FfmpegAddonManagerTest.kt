@@ -41,4 +41,16 @@ class FfmpegAddonManagerTest {
         assertFalse(ZarditParser.isUnsupportedRedditUrl("https://www.threads.net/@user/post/abc"))
         assertEquals("Web", ZarditParser.detectPlatformName("https://www.reddit.com/r/videos/comments/abc/"))
     }
+
+    @Test
+    fun `paused download state preserves title progress and status`() {
+        val paused = DownloadState.Paused(
+            title = "Sample Video",
+            progressPercent = 42.5f,
+            statusLine = "42% · 1.2 MB/s",
+        )
+        assertEquals("Sample Video", paused.title)
+        assertEquals(42.5f, paused.progressPercent)
+        assertEquals("42% · 1.2 MB/s", paused.statusLine)
+    }
 }

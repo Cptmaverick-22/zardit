@@ -496,6 +496,14 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         DownloadService.cancel(app)
     }
 
+    fun pauseDownload() {
+        DownloadService.pause(app)
+    }
+
+    fun resumeDownload() {
+        DownloadService.resume(app)
+    }
+
     fun updateYtDlp() {
         if (_uiState.value.isUpdatingYtDlp) return
         _uiState.update { it.copy(isUpdatingYtDlp = true, updateBanner = "Teaching Charizard new moves…") }

@@ -134,6 +134,7 @@ from theme import (
 THUMBNAIL_MAX_BYTES = 5 * 1024 * 1024
 CLOSE_WAIT_MS = 30000
 NARROW_BREAKPOINT = 580
+MEDIUM_BREAKPOINT = 860
 WIDE_BREAKPOINT = 960
 
 
@@ -557,6 +558,40 @@ def repolish(widget):
     widget.update()
 
 
+def make_platform_icon(platform_name):
+    """Draw a crisp 18x18 colored badge icon for supported platforms."""
+
+    colors = {
+        "YouTube": "#FF0033",
+        "Instagram": "#E1306C",
+        "Facebook": "#1877F2",
+        "X / Twitter": "#1DA1F2",
+        "Threads": "#8B5CF6",
+    }
+    short = {
+        "YouTube": "▶",
+        "Instagram": "◎",
+        "Facebook": "f",
+        "X / Twitter": "𝕏",
+        "Threads": "@",
+    }
+    pix = QPixmap(18, 18)
+    pix.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pix)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setBrush(QColor(colors.get(platform_name, "#E63946")))
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.drawRoundedRect(0, 0, 18, 18, 5, 5)
+    painter.setPen(QColor("#FFFFFF"))
+    font = QFont()
+    font.setBold(True)
+    font.setPixelSize(11)
+    painter.setFont(font)
+    painter.drawText(pix.rect(), Qt.AlignmentFlag.AlignCenter, short.get(platform_name, "●"))
+    painter.end()
+    return QIcon(pix)
+
+
 class FormatRowWidget(QWidget):
     """Custom list row displaying format title, badge, codec details, and size."""
 
@@ -564,7 +599,7 @@ class FormatRowWidget(QWidget):
         super().__init__(parent)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(10, 8, 12, 8)
+        layout.setContentsMargins(10, 8, 14, 8)
         layout.setSpacing(10)
 
         self.radio_dot = QLabel()
@@ -600,6 +635,9 @@ class FormatRowWidget(QWidget):
             detail_label = plain_label(
                 option.details, wrap=True, object_name="formatDetail"
             )
+            detail_label.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+            )
             text_col.addWidget(detail_label)
 
         layout.addLayout(text_col, 1)
@@ -610,6 +648,9 @@ class FormatRowWidget(QWidget):
                 f"~{format_file_size(option.size)}",
                 wrap=False,
                 object_name="formatSize",
+            )
+            self.size_label.setSizePolicy(
+                QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed
             )
             self.size_label.setAlignment(
                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
@@ -1376,8 +1417,8 @@ class MainWindow(QWidget):
         icon = load_app_icon()
         if not icon.isNull():
             self.setWindowIcon(icon)
-        self.setMinimumSize(480, 420)
-        self.resize(760, 520)
+        self.setMinimumSize(420, 460)
+        self.resize(840, 560)
 
         self.state = "idle"      # idle, fetching, ready, downloading, done
         self.mode = "video"      # "video" or "playlist"
@@ -1401,6 +1442,7 @@ class MainWindow(QWidget):
         self._preview_cache = {}
         self._preview_url = ""
         self._is_narrow = False
+        self._is_medium = False
         self._is_wide = False
         self._active_page = "downloader"
         self._history_filter = "all"
@@ -1531,9 +1573,6 @@ class MainWindow(QWidget):
         brand_col.addLayout(title_row)
         brand_col.addWidget(subtitle)
 
-        controls_row = QHBoxLayout()
-        controls_row.setSpacing(8)
-
         nav_frame = QFrame()
         nav_frame.setObjectName("segmentGroup")
         nav_layout = QHBoxLayout(nav_frame)
@@ -1611,17 +1650,36 @@ class MainWindow(QWidget):
         self.about_button.setToolTip(f"Version and {APP_LICENSE} license")
         self.about_button.clicked.connect(self.show_about)
 
-        controls_row.addWidget(nav_frame)
-        controls_row.addWidget(theme_frame)
-        controls_row.addWidget(self.ig_button)
-        controls_row.addWidget(self.update_button)
-        controls_row.addWidget(self.about_button)
-        controls_row.addStretch(1)
+        primary_controls = QHBoxLayout()
+        primary_controls.setSpacing(6)
+        primary_controls.addWidget(nav_frame)
+        primary_controls.addWidget(theme_frame)
+        primary_controls.addStretch(1)
+
+        utility_controls = QHBoxLayout()
+        utility_controls.setSpacing(6)
+        utility_controls.addWidget(self.ig_button)
+        utility_controls.addWidget(self.update_button)
+        utility_controls.addWidget(self.about_button)
+
+        for w in (
+            self.nav_downloader_btn,
+            self.nav_history_btn,
+            *self.theme_buttons.values(),
+            self.ig_button,
+            self.update_button,
+            self.about_button,
+        ):
+            w.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
 
         self.header_controls_container = QWidget()
-        controls_wrap = QHBoxLayout(self.header_controls_container)
-        controls_wrap.setContentsMargins(0, 0, 0, 0)
-        controls_wrap.addLayout(controls_row)
+        self.header_controls_layout = QBoxLayout(
+            QBoxLayout.Direction.LeftToRight, self.header_controls_container
+        )
+        self.header_controls_layout.setContentsMargins(0, 0, 0, 0)
+        self.header_controls_layout.setSpacing(8)
+        self.header_controls_layout.addLayout(primary_controls)
+        self.header_controls_layout.addLayout(utility_controls)
 
         self.header_layout.addLayout(brand_col, 1)
         self.header_layout.addWidget(
@@ -1690,11 +1748,11 @@ class MainWindow(QWidget):
         url_header.setSpacing(8)
         url_label = QLabel("Media link")
         url_label.setObjectName("sectionTitle")
-        url_hint = QLabel("YouTube · Instagram · Facebook · X · Threads")
-        url_hint.setObjectName("mutedText")
+        self.url_hint = QLabel("YouTube · Instagram · Facebook · X · Threads")
+        self.url_hint.setObjectName("mutedText")
         url_header.addWidget(url_label)
         url_header.addStretch(1)
-        url_header.addWidget(url_hint)
+        url_header.addWidget(self.url_hint)
         url_card_layout.addLayout(url_header)
 
         self.url_inputs_layout = QGridLayout()
@@ -1746,24 +1804,32 @@ class MainWindow(QWidget):
         hero_body.setObjectName("heroBody")
         hero_body.setWordWrap(True)
 
-        pills_grid = QGridLayout()
-        pills_grid.setSpacing(8)
+        self.platforms_grid = QGridLayout()
+        self.platforms_grid.setSpacing(8)
+        self.platform_tiles = []
         platforms = (
-            "YouTube",
-            "Instagram",
-            "Facebook",
-            "X / Twitter",
-            "Threads",
+            ("YouTube", "https://www.youtube.com/"),
+            ("Instagram", "https://www.instagram.com/"),
+            ("Facebook", "https://www.facebook.com/"),
+            ("X / Twitter", "https://x.com/"),
+            ("Threads", "https://www.threads.net/"),
         )
-        for idx, platform in enumerate(platforms):
-            pill = QLabel(platform)
-            pill.setObjectName("featurePill")
-            pill.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            pills_grid.addWidget(pill, 0, idx)
+        for platform, launch_url in platforms:
+            tile = QPushButton(platform.split(" /")[0])
+            tile.setObjectName("platformTile")
+            tile.setIcon(make_platform_icon(platform))
+            tile.setIconSize(QSize(18, 18))
+            tile.setCursor(Qt.CursorShape.PointingHandCursor)
+            tile.setToolTip(f"Open {platform} in browser to copy a link")
+            tile.clicked.connect(
+                lambda _c=False, u=launch_url: QDesktopServices.openUrl(QUrl(u))
+            )
+            self.platform_tiles.append(tile)
+        self._layout_platform_tiles(narrow=False)
 
         hero_layout.addWidget(hero_title)
         hero_layout.addWidget(hero_body)
-        hero_layout.addLayout(pills_grid)
+        hero_layout.addLayout(self.platforms_grid)
 
         self.recent_section = QWidget()
         recent_layout = QVBoxLayout(self.recent_section)
@@ -2285,16 +2351,32 @@ class MainWindow(QWidget):
             self.playlist_inputs_layout.setColumnStretch(1, 1)
             self.playlist_inputs_layout.setColumnStretch(3, 1)
 
+    def _layout_platform_tiles(self, narrow):
+        while self.platforms_grid.count():
+            self.platforms_grid.takeAt(0)
+        cols = 2 if narrow else 5
+        for idx, tile in enumerate(self.platform_tiles):
+            self.platforms_grid.addWidget(tile, idx // cols, idx % cols)
+
     def update_responsive_layout(self, width):
         """Stretch layout cleanly across full window width at every breakpoint."""
 
         narrow = width < NARROW_BREAKPOINT
+        medium = width < MEDIUM_BREAKPOINT
         wide = width >= WIDE_BREAKPOINT
         side_margin = 16 if narrow else 24
 
-        self.header_outer_layout.setContentsMargins(side_margin, 16, side_margin, 8)
+        self.header_outer_layout.setContentsMargins(side_margin, 14, side_margin, 8)
         self.content_layout.setContentsMargins(side_margin, 10, side_margin, 24)
         self.history_page_layout.setContentsMargins(side_margin, 10, side_margin, 24)
+
+        if medium != self._is_medium:
+            self._is_medium = medium
+            self.header_layout.setDirection(
+                QBoxLayout.Direction.TopToBottom
+                if medium
+                else QBoxLayout.Direction.LeftToRight
+            )
 
         if narrow != self._is_narrow:
             self._is_narrow = narrow
@@ -2303,9 +2385,17 @@ class MainWindow(QWidget):
                 if narrow
                 else QBoxLayout.Direction.LeftToRight
             )
-            self.header_layout.setDirection(direction)
+            self.header_controls_layout.setDirection(direction)
             self.card_layout.setDirection(direction)
+            self.card_layout.setAlignment(
+                self.thumb,
+                Qt.AlignmentFlag.AlignHCenter
+                if narrow
+                else (Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft),
+            )
             self.history_filter_layout.setDirection(direction)
+            self.url_hint.setVisible(not narrow)
+            self._layout_platform_tiles(narrow)
             self._layout_url_inputs(narrow)
             self._layout_playlist_inputs(narrow)
 

@@ -90,6 +90,12 @@ sealed interface DownloadState {
         val statusLine: String,
     ) : DownloadState
 
+    data class Paused(
+        val title: String,
+        val progressPercent: Float,
+        val statusLine: String,
+    ) : DownloadState
+
     data class Completed(
         val title: String,
         val savedLocation: String,

@@ -141,6 +141,56 @@ class GuiInterfaceTests(unittest.TestCase):
         self.assertEqual(wide_margins.left(), 24)
         self.assertEqual(wide_margins.right(), 24)
 
+    def test_responsive_header_tiles_and_hints(self):
+        # At narrow width (< 580), header stacks, header controls stack, url_hint hides, and tiles wrap to 2 columns.
+        self.window.update_responsive_layout(480)
+        self.assertTrue(self.window._is_medium)
+        self.assertTrue(self.window._is_narrow)
+        self.assertEqual(
+            self.window.header_layout.direction(),
+            QBoxLayout.Direction.TopToBottom,
+        )
+        self.assertEqual(
+            self.window.header_controls_layout.direction(),
+            QBoxLayout.Direction.TopToBottom,
+        )
+        self.assertTrue(self.window.url_hint.isHidden())
+        self.assertEqual(len(self.window.platform_tiles), 5)
+        # Third tile moves to row 1 in 2-column layout.
+        idx = self.window.platforms_grid.indexOf(self.window.platform_tiles[2])
+        row, col, _, _ = self.window.platforms_grid.getItemPosition(idx)
+        self.assertEqual((row, col), (1, 0))
+
+        # At medium width (700), header still stacks vertically while controls stay horizontal and tiles fit on 1 row.
+        self.window.update_responsive_layout(700)
+        self.assertTrue(self.window._is_medium)
+        self.assertFalse(self.window._is_narrow)
+        self.assertEqual(
+            self.window.header_layout.direction(),
+            QBoxLayout.Direction.TopToBottom,
+        )
+        self.assertEqual(
+            self.window.header_controls_layout.direction(),
+            QBoxLayout.Direction.LeftToRight,
+        )
+        self.assertFalse(self.window.url_hint.isHidden())
+        idx_med = self.window.platforms_grid.indexOf(self.window.platform_tiles[4])
+        row_m, col_m, _, _ = self.window.platforms_grid.getItemPosition(idx_med)
+        self.assertEqual((row_m, col_m), (0, 4))
+
+        # At wide width (1000), header returns to single horizontal bar.
+        self.window.update_responsive_layout(1000)
+        self.assertFalse(self.window._is_medium)
+        self.assertEqual(
+            self.window.header_layout.direction(),
+            QBoxLayout.Direction.LeftToRight,
+        )
+
+        # Platform tiles launch external URL on click.
+        with mock.patch.object(gui.QDesktopServices, "openUrl") as open_mock:
+            self.window.platform_tiles[0].click()
+            open_mock.assert_called_once()
+
     def test_history_view_play_filter_and_recording(self):
         media_dir = Path(self.temporary.name) / "media"
         media_dir.mkdir(parents=True, exist_ok=True)

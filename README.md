@@ -28,9 +28,9 @@
 
 Zardit builds a complete application layer on top of [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) across **three interfaces**:
 
-- **Desktop App (`gui.py` / `Zardit`)** — PySide6 interface with **Auto / Light / Dark** themes, one-tap **Paste & Fetch**, **IG** private Instagram access (local browser cookies or 100% offline source parser), interactive gallery/carousel previews, and built-in **History** playback & management.
-- **Terminal App (`main.py` / `zardit-cli`)** — Themed Rich menu-driven CLI sharing settings, Instagram access, and download history with the desktop app.
-- **Android App (`android/`)** — Slim Material 3 Jetpack Compose companion app (`arm64-v8a`) with Android **Share-sheet** integration, **Auto / Light / Dark** themes, foreground download service & notifications, native `MediaMuxer` + Media3 `Mp4Muxer` assembly, Storage Access Framework (`Downloads/Zardit`), optional local AES-256-GCM encrypted **IG** sign-in, and **History** management with device-file cleanup.
+- **Desktop App (`gui.py` / `Zardit`)** — Responsive PySide6 interface with **Auto / Light / Dark** themes, clickable platform quick-launch tiles, one-tap **Paste & Fetch**, **IG / FB** private access (local browser cookies, Firefox/Chrome/etc., or offline source parser), interactive gallery/carousel previews, and built-in **History** playback & management.
+- **Terminal App (`main.py` / `zardit-cli`)** — Themed Rich menu-driven CLI sharing settings, Instagram/Facebook access, and download history with the desktop app.
+- **Android App (`android/`)** — Material 3 Jetpack Compose companion app (`arm64-v8a`) with floating pill dock (scroll-aware hide/reveal & active transfer pause/resume pill), **Settings** tab, optional on-demand **FFmpeg MP3 addon**, thumbnail **History** cards, Android **Share-sheet** integration, **Auto / Light / Dark** themes, foreground download service & notifications, native `MediaMuxer` + Media3 `Mp4Muxer` assembly, Storage Access Framework (`Downloads/Zardit`), and local AES-256-GCM encrypted **IG / FB** sign-in.
 
 ### Platform compatibility
 
@@ -52,7 +52,7 @@ Other websites supported by `yt-dlp` may also work, but are **best-effort** and 
 
 ### Downloading
 - **Video as MP4** — Clean, deduplicated resolution list with estimated file sizes per stream (including probed direct-stream size estimates).
-- **Audio** — Desktop supports **128, 192, 256, or 320 kbps MP3** (with embedded cover art and metadata tags) or original audio. Android saves **Original / M4A** audio directly without bundling FFmpeg.
+- **Audio** — Desktop supports **128, 192, 256, or 320 kbps MP3** (with embedded cover art and metadata tags) or original audio. Android saves **Original / M4A** directly out of the box and supports **128–320 kbps MP3** via the optional in-app **FFmpeg** addon (no APK bloat by default).
 - **Images & Carousels** — Download native **Original** images or convert to **PNG**, **JPG**, or **WebP** across videos (thumbnails), playlists (Android & desktop), and multi-photo carousels/galleries with uncropped aspect ratios.
 - **Playlists & Smart Ranges** — Download everything, enter ranges like `1-3, 5, 8-10`, filter by title (desktop), or toggle individual items. Pasting a single video URL from inside a playlist lets you choose between downloading just that item or the full playlist.
 
@@ -67,7 +67,7 @@ Other websites supported by `yt-dlp` may also work, but are **best-effort** and 
 
 ## 📦 Installation
 
-Prebuilt packages on [GitHub Releases](https://github.com/Cptmaverick-22/zardit/releases/latest) are recommended: Linux and Windows bundles include Python, PySide6, `yt-dlp`, **FFmpeg**, and **Deno**; the Android APK targets `arm64-v8a` with R8 shrinking and native media muxing (no bundled FFmpeg).
+Prebuilt packages on [GitHub Releases](https://github.com/Cptmaverick-22/zardit/releases/latest) are recommended: Linux and Windows bundles include Python, PySide6, `yt-dlp`, **FFmpeg**, and **Deno**; the Android APK targets `arm64-v8a` with R8 shrinking, native media muxing, and an optional in-app FFmpeg MP3 add-on.
 
 | OS | Package | Build & Verification Status |
 |---|---|---|
@@ -216,7 +216,7 @@ python zardit_app.py
 Start it with `zardit-cli`, `./Zardit-*-x86_64.AppImage --cli`, or `python main.py`:
 
 ```text
-  ╭─ ▶ Zardit v1.4.2 ──────────────────────────────────────────────────────────╮
+  ╭─ ▶ Zardit v1.5.0 ──────────────────────────────────────────────────────────╮
   │                                                                            │
   │  Tagline  Blaze through videos, audio & playlists across every platform.   │
   │  Save to  ~/Downloads/Zardit                                               │
@@ -250,12 +250,12 @@ Start it with `zardit-cli`, `./Zardit-*-x86_64.AppImage --cli`, or `python main.
 
 ## 📱 Using the Android App
 
-1. **Paste or Share a link:** Paste a URL and tap **Paste & Fetch** / **Fetch**, or share links directly into **Zardit** from any app's Android **Share** menu.
-2. **Choose Video, Audio, or Image:** Switch between **Video (MP4)**, **Audio** (when exposed), and **Image** (**Original**, **PNG**, **JPG**, or **WebP** — available for standalone photos, video thumbnails, and playlists). Toggle playlist/carousel items or select ranges like `1-3, 5`.
-3. **Output folder:** Saves to `Downloads/Zardit` by default, or any folder picked with **Change…** via Android Storage Access Framework.
-4. **History & File Cleanup:** Track progress in the app or notification shade, then use **History** to **Open**, **Share**, remove single entries, or tap **Clear all** and choose **History only** vs. **Delete files too**.
-5. **Optional Instagram Sign-In (`IG`):** Tap **IG** at the top to sign in locally (`Android Keystore AES-256-GCM`) for private, follow-only, or `/share/` Instagram posts. Wait for notifications & battery optimization settings to allow background downloads cleanly.
-6. **In-App Engine Updater (`Engine`):** Tap **Engine** to update the embedded extraction engine on-device.
+1. **Paste or Share a link:** Paste a URL and tap **Paste & Fetch** / **Fetch**, pick a **Quick browse platform** app, or share links directly into **Zardit** from any app's Android **Share** menu.
+2. **Choose Video, Audio, or Image:** Switch between **Video (MP4)**, **Audio** (**Original M4A**, or **128–320 kbps MP3** with optional FFmpeg addon), and **Image** (**Original**, **PNG**, **JPG**, or **WebP** — available for standalone photos, video thumbnails, and playlists). Toggle playlist/carousel items or select ranges like `1-3, 5`.
+3. **Output folder & Pause/Resume:** Saves to `Downloads/Zardit` by default, or any folder picked via **Settings** / **Change…** (Android Storage Access Framework). Pause and resume active downloads from the morphing dock pill or transfer card.
+4. **History with Thumbnails & File Cleanup:** Browse thumbnail **History** cards with **Open**, **Share**, remove single entries, or tap **Clear all** (`History only` vs. `Delete files too`).
+5. **Optional Instagram & Facebook Sign-In (`IG/FB`):** Tap **IG/FB** at the top to sign in locally (`Android Keystore AES-256-GCM`) using a realistic Chrome/WebView session that persists across app updates.
+6. **Settings, Updates & Addons (`Settings` / `Updates`):** Configure theme, default quality, Wi-Fi only mode, optional **FFmpeg MP3 addon**, **Engine** updates, and **Zardit** app updates.
 
 ---
 
@@ -264,7 +264,7 @@ Start it with `zardit-cli`, `./Zardit-*-x86_64.AppImage --cli`, or `python main.
 | Media Type | Desktop (Linux / Windows / macOS) | Android (`arm64-v8a`) |
 |---|---|---|
 | **Video (MP4)** | `144p`–`2160p` (source-dependent). Prefers H.264 up to `1080p`; uses AV1 / VP9 + FFmpeg muxing at `1440p` / `2160p`. | Native MP4 muxing (H.264 / HEVC / VP9 / AV1) via Jetpack Media3 `Mp4Muxer` + Android `MediaMuxer` without bundling FFmpeg. |
-| **Audio** | MP3 (`128`, `192`, `256`, `320 kbps`) with cover art & metadata tags, or Original audio (`.m4a`). | Original audio (`.m4a` / AAC) saved directly without FFmpeg transcoding. |
+| **Audio** | MP3 (`128`, `192`, `256`, `320 kbps`) with cover art & metadata tags, or Original audio (`.m4a`). | Original audio (`.m4a` / AAC) out of the box, plus `128`–`320 kbps` MP3 with the optional in-app FFmpeg addon. |
 | **Images** | **Original** or converted to **PNG** (lossless), **JPG**, or **WebP** while keeping native aspect ratio. | **Original** or converted to **PNG**, **JPG**, or **WebP** across photos, video thumbnails & playlists. |
 
 > **Limitations:** Live streams, upcoming premieres, and DRM-protected or subscriber-only media are not supported. On Instagram, even with local **IG** auth enabled, access depends on your account's permissions and Instagram's web APIs.
@@ -407,7 +407,6 @@ Priorities may shift as upstream platforms change; listed items are goals rather
 
 - Security & reliability hardening (stricter URL validation, Android backup exclusions, expanded secret redaction, and Android JVM unit tests in CI)
 - Gradual modularization of `downloader.py` and `ZarditEngine.kt` for safer per-platform maintenance
-- Optional on-demand FFmpeg add-on for Android (MP3 conversion without inflating default APK size)
 - Faster playlists by preparing the next item while one downloads
 - Subtitles and time-range clip workflows
 

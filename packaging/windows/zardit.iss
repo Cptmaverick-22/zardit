@@ -1,7 +1,7 @@
 ; Inno Setup script for Zardit (Windows x64)
 
 #ifndef MyAppVersion
-  #define MyAppVersion "1.4.2"
+  #define MyAppVersion "1.5.0"
 #endif
 
 [Setup]

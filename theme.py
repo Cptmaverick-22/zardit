@@ -345,16 +345,35 @@ def build_qt_stylesheet(theme_name):
         letter-spacing: 0.8px;
     }}
 
-    QFrame#recentTile {{
-        background-color: {c["surface_alt"]};
-        border: 1px solid {c["border"]};
-        border-radius: 10px;
-    }}
-
     QFrame#card, QFrame#mediaCard, QFrame#heroCard {{
         background-color: {c["surface"]};
         border: 1px solid {c["border"]};
-        border-radius: 12px;
+        border-radius: 14px;
+    }}
+
+    QPushButton#platformTile {{
+        background-color: {c["surface_alt"]};
+        color: {c["text"]};
+        border: 1px solid {c["border"]};
+        border-radius: 11px;
+        padding: 9px 10px;
+        font-size: 12px;
+        font-weight: 600;
+    }}
+
+    QPushButton#platformTile:hover {{
+        background-color: {c["surface_hover"]};
+        border-color: {c["border_strong"]};
+    }}
+
+    QFrame#recentTile {{
+        background-color: {c["surface_alt"]};
+        border: 1px solid {c["border"]};
+        border-radius: 11px;
+    }}
+
+    QFrame#recentTile:hover {{
+        border-color: {c["border_strong"]};
     }}
 
     QLabel#heroTitle {{
@@ -402,8 +421,8 @@ def build_qt_stylesheet(theme_name):
         color: {c["text_secondary"]};
         border: none;
         border-radius: 7px;
-        padding: 5px 10px;
-        font-size: 12px;
+        padding: 5px 9px;
+        font-size: 11.5px;
         font-weight: 600;
     }}
 
@@ -553,8 +572,8 @@ def build_qt_stylesheet(theme_name):
         background-color: {c["accent"]};
         color: {c["accent_text"]};
         border: 1px solid {c["accent"]};
-        border-radius: 8px;
-        padding: 9px 22px;
+        border-radius: 10px;
+        padding: 10px 22px;
         font-weight: 700;
     }}
 
