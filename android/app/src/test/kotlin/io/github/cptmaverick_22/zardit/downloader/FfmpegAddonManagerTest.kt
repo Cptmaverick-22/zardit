@@ -1,5 +1,7 @@
 package io.github.cptmaverick_22.zardit.downloader
 
+import io.github.cptmaverick_22.zardit.ui.main.MainScreenViewModel
+import io.github.cptmaverick_22.zardit.ui.main.MainUiState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -52,5 +54,46 @@ class FfmpegAddonManagerTest {
         assertEquals("Sample Video", paused.title)
         assertEquals(42.5f, paused.progressPercent)
         assertEquals("42% · 1.2 MB/s", paused.statusLine)
+    }
+
+    @Test
+    fun `unseen history badge increments only outside history tab`() {
+        assertEquals(0, MainUiState().unseenHistoryCount)
+        assertEquals(
+            1,
+            MainScreenViewModel.computeNextUnseenCount(
+                activeTab = AppTab.DOWNLOADER,
+                currentUnseen = 0,
+                addedCount = 1,
+                alreadyExisted = false,
+            ),
+        )
+        assertEquals(
+            3,
+            MainScreenViewModel.computeNextUnseenCount(
+                activeTab = AppTab.SETTINGS,
+                currentUnseen = 1,
+                addedCount = 2,
+                alreadyExisted = false,
+            ),
+        )
+        assertEquals(
+            0,
+            MainScreenViewModel.computeNextUnseenCount(
+                activeTab = AppTab.HISTORY,
+                currentUnseen = 2,
+                addedCount = 1,
+                alreadyExisted = false,
+            ),
+        )
+        assertEquals(
+            1,
+            MainScreenViewModel.computeNextUnseenCount(
+                activeTab = AppTab.DOWNLOADER,
+                currentUnseen = 1,
+                addedCount = 1,
+                alreadyExisted = true,
+            ),
+        )
     }
 }

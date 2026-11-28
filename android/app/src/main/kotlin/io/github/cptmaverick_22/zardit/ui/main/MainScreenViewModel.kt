@@ -75,6 +75,7 @@ data class MainUiState(
     val isInstagramConnected: Boolean = false,
     val isFacebookConnected: Boolean = false,
     val history: List<HistoryItem> = emptyList(),
+    val unseenHistoryCount: Int = 0,
 )
 
 class MainScreenViewModel(application: Application) : AndroidViewModel(application) {
@@ -108,7 +109,20 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch {
             DownloadService.state.collect { state ->
                 if (state is DownloadState.Completed) {
-                    refreshHistory()
+                    val prevIds = _uiState.value.history.mapTo(HashSet()) { it.id }
+                    val loaded = historyStore.loadAll()
+                    val added = loaded.count { it.id !in prevIds }
+                    _uiState.update { cur ->
+                        cur.copy(
+                            history = loaded,
+                            unseenHistoryCount = computeNextUnseenCount(
+                                activeTab = cur.activeTab,
+                                currentUnseen = cur.unseenHistoryCount,
+                                addedCount = added,
+                                alreadyExisted = state.alreadyExisted,
+                            ),
+                        )
+                    }
                 }
             }
         }
@@ -116,9 +130,16 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun onTabSelected(tab: AppTab) {
-        _uiState.update { it.copy(activeTab = tab) }
         if (tab == AppTab.HISTORY) {
-            refreshHistory()
+            _uiState.update {
+                it.copy(
+                    activeTab = tab,
+                    history = historyStore.loadAll(),
+                    unseenHistoryCount = 0,
+                )
+            }
+        } else {
+            _uiState.update { it.copy(activeTab = tab) }
         }
     }
 
@@ -758,11 +779,34 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     private fun refreshHistory() {
-        _uiState.update { it.copy(history = historyStore.loadAll()) }
+        val loaded = historyStore.loadAll()
+        _uiState.update {
+            it.copy(
+                history = loaded,
+                unseenHistoryCount = if (it.activeTab == AppTab.HISTORY) {
+                    0
+                } else {
+                    it.unseenHistoryCount.coerceAtMost(loaded.size)
+                },
+            )
+        }
     }
 
     private fun extractFirstUrl(text: String): String? {
         val regex = Regex("https?://\\S+")
         return regex.find(text)?.value
+    }
+
+    companion object {
+        fun computeNextUnseenCount(
+            activeTab: AppTab,
+            currentUnseen: Int,
+            addedCount: Int,
+            alreadyExisted: Boolean,
+        ): Int = when {
+            activeTab == AppTab.HISTORY -> 0
+            !alreadyExisted && addedCount > 0 -> currentUnseen + addedCount
+            else -> currentUnseen
+        }
     }
 }

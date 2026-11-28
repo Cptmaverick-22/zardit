@@ -419,9 +419,6 @@ fun MainScreen(
                         onPickFolder = { folderPickerLauncher.launch(null) },
                         onResetFolder = { viewModel.resetFolder() },
                         onTriggerDownload = { triggerDownload() },
-                        onPauseDownload = { viewModel.pauseDownload() },
-                        onResumeDownload = { viewModel.resumeDownload() },
-                        onCancelDownload = { viewModel.cancelDownload() },
                         onOpenUrl = { launchUrl ->
                             runCatching {
                                 context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(launchUrl)))
@@ -500,13 +497,14 @@ fun MainScreen(
 
         FloatingBottomDock(
             activeTab = ui.activeTab,
-            historyCount = ui.history.size,
+            unseenHistoryCount = ui.unseenHistoryCount,
             downloadState = downloadState,
             activeThumbnailUrl = ui.preview?.thumbnailUrl,
             dockMinimized = dockMinimized,
             onTabSelected = viewModel::onTabSelected,
             onPauseDownload = viewModel::pauseDownload,
             onResumeDownload = viewModel::resumeDownload,
+            onCancelDownload = viewModel::cancelDownload,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .navigationBarsPadding()
@@ -1052,9 +1050,6 @@ private fun HomeTab(
     onPickFolder: () -> Unit,
     onResetFolder: () -> Unit,
     onTriggerDownload: () -> Unit,
-    onPauseDownload: () -> Unit,
-    onResumeDownload: () -> Unit,
-    onCancelDownload: () -> Unit,
     onOpenUrl: (String) -> Unit,
     onOpenHistoryItem: (HistoryItem) -> Unit,
     onViewAllHistory: () -> Unit,
@@ -1676,6 +1671,7 @@ private fun HomeTab(
                         if (ui.hasCustomFolder) {
                             TextButton(
                                 onClick = onResetFolder,
+                                enabled = !isRunning && !isPaused,
                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
                             ) {
                                 Text("Default", style = MaterialTheme.typography.labelSmall)
@@ -1683,13 +1679,14 @@ private fun HomeTab(
                         }
                         OutlinedButton(
                             onClick = onPickFolder,
+                            enabled = !isRunning && !isPaused,
                             contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                         ) {
                             Text("Change…", style = MaterialTheme.typography.labelMedium, maxLines = 1)
                         }
                     }
 
-                    if (!isJustCompleted && !isRunning) {
+                    if (!isJustCompleted && !isRunning && !isPaused) {
                         ui.existingDownloadPath?.let { existing ->
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
@@ -1713,88 +1710,9 @@ private fun HomeTab(
                     }
 
                     when (val state = downloadState) {
-                        is DownloadState.Running -> {
-                            if (state.progressPercent > 0f) {
-                                LinearProgressIndicator(
-                                    progress = { state.progressPercent / 100f },
-                                    modifier = Modifier.fillMaxWidth(),
-                                )
-                            } else {
-                                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                            }
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Text(
-                                    text = state.statusLine,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.weight(1f),
-                                )
-                                OutlinedButton(
-                                    onClick = onPauseDownload,
-                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                                ) {
-                                    Icon(
-                                        Icons.Rounded.Pause,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(16.dp),
-                                    )
-                                    Spacer(Modifier.width(4.dp))
-                                    Text("Pause", maxLines = 1)
-                                }
-                                OutlinedButton(
-                                    onClick = onCancelDownload,
-                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                                ) {
-                                    Text("Cancel", maxLines = 1)
-                                }
-                            }
-                        }
-
-                        is DownloadState.Paused -> {
-                            if (state.progressPercent > 0f) {
-                                LinearProgressIndicator(
-                                    progress = { (state.progressPercent / 100f).coerceIn(0f, 1f) },
-                                    modifier = Modifier.fillMaxWidth(),
-                                )
-                            }
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Text(
-                                    text = "Paused · ${state.statusLine}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.weight(1f),
-                                )
-                                Button(
-                                    onClick = onResumeDownload,
-                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                                ) {
-                                    Icon(
-                                        Icons.Rounded.PlayArrow,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(16.dp),
-                                    )
-                                    Spacer(Modifier.width(4.dp))
-                                    Text("Resume", maxLines = 1)
-                                }
-                                OutlinedButton(
-                                    onClick = onCancelDownload,
-                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                                ) {
-                                    Text("Cancel", maxLines = 1)
-                                }
-                            }
-                        }
+                        // Active transfer progress & Pause/Resume/Cancel controls live exclusively
+                        // in the floating dock pill so they don't duplicate behind the overlay.
+                        is DownloadState.Running, is DownloadState.Paused -> Unit
 
                         is DownloadState.Completed -> {
                             val prefix = if (state.alreadyExisted) "Already downloaded: " else "Saved to "
@@ -1897,13 +1815,14 @@ private fun HomeTab(
 @Composable
 private fun FloatingBottomDock(
     activeTab: AppTab,
-    historyCount: Int,
+    unseenHistoryCount: Int,
     downloadState: DownloadState,
     activeThumbnailUrl: String?,
     dockMinimized: Boolean,
     onTabSelected: (AppTab) -> Unit,
     onPauseDownload: () -> Unit,
     onResumeDownload: () -> Unit,
+    onCancelDownload: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val isActiveTransfer = downloadState is DownloadState.Running || downloadState is DownloadState.Paused
@@ -1913,8 +1832,9 @@ private fun FloatingBottomDock(
         verticalArrangement = Arrangement.spacedBy(10.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        // Upper floating transfer pill: full width above main dock by default,
-        // flanked smoothly by Home & Settings circular pills when scrolled down.
+        // Upper floating transfer pill:
+        // - Unscrolled (two-tier): full width with inline Pause/Resume + Cancel above the 3-tab dock.
+        // - Scrolled: flanked on the left by Home and on the right by Cancel (replacing Settings).
         AnimatedVisibility(
             visible = isActiveTransfer,
             enter = slideInVertically(initialOffsetY = { it / 2 }) + expandVertically() + fadeIn(),
@@ -1947,9 +1867,11 @@ private fun FloatingBottomDock(
                 ActiveTransferPill(
                     downloadState = downloadState,
                     activeThumbnailUrl = activeThumbnailUrl,
+                    showInlineCancel = !dockMinimized,
                     onClick = { onTabSelected(AppTab.DOWNLOADER) },
                     onPauseDownload = onPauseDownload,
                     onResumeDownload = onResumeDownload,
+                    onCancelDownload = onCancelDownload,
                     modifier = Modifier.weight(1f),
                 )
 
@@ -1963,10 +1885,10 @@ private fun FloatingBottomDock(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Spacer(Modifier.width(10.dp))
                         DockCircleButton(
-                            icon = Icons.Rounded.Settings,
-                            contentDescription = "Settings",
-                            selected = activeTab == AppTab.SETTINGS,
-                            onClick = { onTabSelected(AppTab.SETTINGS) },
+                            icon = Icons.Rounded.Close,
+                            contentDescription = "Cancel download",
+                            selected = false,
+                            onClick = onCancelDownload,
                         )
                     }
                 }
@@ -2026,12 +1948,12 @@ private fun FloatingBottomDock(
                                 horizontalAlignment = Alignment.CenterHorizontally,
                                 verticalArrangement = Arrangement.spacedBy(1.dp),
                             ) {
-                                if (tab == AppTab.HISTORY && historyCount > 0) {
+                                if (tab == AppTab.HISTORY && unseenHistoryCount > 0) {
                                     BadgedBox(
                                         badge = {
                                             Badge {
                                                 Text(
-                                                    text = if (historyCount > 99) "99+" else "$historyCount",
+                                                    text = if (unseenHistoryCount > 99) "99+" else "$unseenHistoryCount",
                                                     style = MaterialTheme.typography.labelSmall,
                                                 )
                                             }
@@ -2117,9 +2039,11 @@ private fun DockCircleButton(
 private fun ActiveTransferPill(
     downloadState: DownloadState,
     activeThumbnailUrl: String?,
+    showInlineCancel: Boolean,
     onClick: () -> Unit,
     onPauseDownload: () -> Unit,
     onResumeDownload: () -> Unit,
+    onCancelDownload: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val title = when (downloadState) {
@@ -2219,16 +2143,37 @@ private fun ActiveTransferPill(
                 }
             }
 
-            IconButton(
-                onClick = { if (isPausedState) onResumeDownload() else onPauseDownload() },
-                modifier = Modifier.size(42.dp),
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Icon(
-                    imageVector = if (isPausedState) Icons.Rounded.PlayArrow else Icons.Rounded.Pause,
-                    contentDescription = if (isPausedState) "Resume download" else "Pause download",
-                    tint = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.size(24.dp),
-                )
+                IconButton(
+                    onClick = { if (isPausedState) onResumeDownload() else onPauseDownload() },
+                    modifier = Modifier.size(40.dp),
+                ) {
+                    Icon(
+                        imageVector = if (isPausedState) Icons.Rounded.PlayArrow else Icons.Rounded.Pause,
+                        contentDescription = if (isPausedState) "Resume download" else "Pause download",
+                        tint = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.size(22.dp),
+                    )
+                }
+                AnimatedVisibility(
+                    visible = showInlineCancel,
+                    enter = expandHorizontally() + fadeIn(),
+                    exit = shrinkHorizontally() + fadeOut(),
+                ) {
+                    IconButton(
+                        onClick = onCancelDownload,
+                        modifier = Modifier.size(38.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Close,
+                            contentDescription = "Cancel download",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                }
             }
         }
     }
