@@ -8,13 +8,18 @@ import android.os.Build
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkHorizontally
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -179,18 +184,35 @@ fun MainScreen(
         viewModel.startDownload()
     }
 
-    var dockVisible by remember { mutableStateOf(true) }
+    var dockMinimized by remember { mutableStateOf(false) }
     val hasActiveTransfer = downloadState is DownloadState.Running || downloadState is DownloadState.Paused
     LaunchedEffect(ui.activeTab, hasActiveTransfer) {
-        dockVisible = true
+        dockMinimized = false
     }
     val nestedScrollConnection = remember {
+        var accumulatedY = 0f
         object : NestedScrollConnection {
-            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-                if (available.y < -10f) {
-                    dockVisible = false
-                } else if (available.y > 10f) {
-                    dockVisible = true
+            override fun onPostScroll(
+                consumed: Offset,
+                available: Offset,
+                source: NestedScrollSource,
+            ): Offset {
+                // Only react to scroll actually consumed by a scrollable list/column
+                // so short non-scrollable screens (e.g. empty Home) keep the dock pinned.
+                if (consumed.y != 0f) {
+                    if ((accumulatedY > 0f && consumed.y < 0f) ||
+                        (accumulatedY < 0f && consumed.y > 0f)
+                    ) {
+                        accumulatedY = 0f
+                    }
+                    accumulatedY += consumed.y
+                    if (accumulatedY < -18f) {
+                        dockMinimized = true
+                        accumulatedY = 0f
+                    } else if (accumulatedY > 18f) {
+                        dockMinimized = false
+                        accumulatedY = 0f
+                    }
                 }
                 return Offset.Zero
             }
@@ -476,25 +498,20 @@ fun MainScreen(
             }
         }
 
-        AnimatedVisibility(
-            visible = dockVisible,
-            enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
-            exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
+        FloatingBottomDock(
+            activeTab = ui.activeTab,
+            historyCount = ui.history.size,
+            downloadState = downloadState,
+            activeThumbnailUrl = ui.preview?.thumbnailUrl,
+            dockMinimized = dockMinimized,
+            onTabSelected = viewModel::onTabSelected,
+            onPauseDownload = viewModel::pauseDownload,
+            onResumeDownload = viewModel::resumeDownload,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .navigationBarsPadding()
                 .padding(horizontal = 20.dp, vertical = 10.dp),
-        ) {
-            FloatingBottomDock(
-                activeTab = ui.activeTab,
-                historyCount = ui.history.size,
-                downloadState = downloadState,
-                activeThumbnailUrl = ui.preview?.thumbnailUrl,
-                onTabSelected = viewModel::onTabSelected,
-                onPauseDownload = viewModel::pauseDownload,
-                onResumeDownload = viewModel::resumeDownload,
-            )
-        }
+        )
     }
 
     if (showAccountsSheet) {
@@ -1872,7 +1889,7 @@ private fun HomeTab(
         Spacer(
             modifier = Modifier
                 .navigationBarsPadding()
-                .height(82.dp),
+                .height(if (isRunning || isPaused) 142.dp else 82.dp),
         )
     }
 }
@@ -1883,6 +1900,7 @@ private fun FloatingBottomDock(
     historyCount: Int,
     downloadState: DownloadState,
     activeThumbnailUrl: String?,
+    dockMinimized: Boolean,
     onTabSelected: (AppTab) -> Unit,
     onPauseDownload: () -> Unit,
     onResumeDownload: () -> Unit,
@@ -1890,164 +1908,77 @@ private fun FloatingBottomDock(
 ) {
     val isActiveTransfer = downloadState is DownloadState.Running || downloadState is DownloadState.Paused
 
-    AnimatedContent(
-        targetState = isActiveTransfer,
-        transitionSpec = { fadeIn() togetherWith fadeOut() },
-        label = "floating_dock_morph",
+    Column(
         modifier = modifier.fillMaxWidth(),
-    ) { downloading ->
-        if (downloading) {
-            val title = when (downloadState) {
-                is DownloadState.Running -> downloadState.title
-                is DownloadState.Paused -> downloadState.title
-                else -> "Downloading"
-            }
-            val progress = when (downloadState) {
-                is DownloadState.Running -> downloadState.progressPercent
-                is DownloadState.Paused -> downloadState.progressPercent
-                else -> 0f
-            }
-            val subtitle = when (downloadState) {
-                is DownloadState.Running -> downloadState.statusLine
-                is DownloadState.Paused -> "Paused · ${downloadState.progressPercent.toInt()}%"
-                else -> ""
-            }
-            val isPausedState = downloadState is DownloadState.Paused
-
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        // Upper floating transfer pill: full width above main dock by default,
+        // flanked smoothly by Home & Settings circular pills when scrolled down.
+        AnimatedVisibility(
+            visible = isActiveTransfer,
+            enter = slideInVertically(initialOffsetY = { it / 2 }) + expandVertically() + fadeIn(),
+            exit = slideOutVertically(targetOffsetY = { it / 2 }) + shrinkVertically() + fadeOut(),
+        ) {
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .animateContentSize(),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                // Circular Home pill
-                Surface(
-                    shape = CircleShape,
-                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
-                    border = BorderStroke(
-                        1.dp,
-                        if (activeTab == AppTab.DOWNLOADER) {
-                            MaterialTheme.colorScheme.primary.copy(alpha = 0.65f)
-                        } else {
-                            MaterialTheme.colorScheme.outline.copy(alpha = 0.85f)
-                        },
-                    ),
-                    shadowElevation = 12.dp,
-                    modifier = Modifier
-                        .size(58.dp)
-                        .clip(CircleShape)
-                        .clickable { onTabSelected(AppTab.DOWNLOADER) },
+                AnimatedVisibility(
+                    visible = dockMinimized,
+                    enter = slideInHorizontally(initialOffsetX = { -it }) +
+                        expandHorizontally(expandFrom = Alignment.Start) + fadeIn(),
+                    exit = slideOutHorizontally(targetOffsetX = { -it }) +
+                        shrinkHorizontally(shrinkTowards = Alignment.Start) + fadeOut(),
                 ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            imageVector = Icons.Rounded.Home,
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        DockCircleButton(
+                            icon = Icons.Rounded.Home,
                             contentDescription = "Home",
-                            tint = if (activeTab == AppTab.DOWNLOADER) {
-                                MaterialTheme.colorScheme.onSurface
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            },
-                            modifier = Modifier.size(24.dp),
+                            selected = activeTab == AppTab.DOWNLOADER,
+                            onClick = { onTabSelected(AppTab.DOWNLOADER) },
+                        )
+                        Spacer(Modifier.width(10.dp))
+                    }
+                }
+
+                ActiveTransferPill(
+                    downloadState = downloadState,
+                    activeThumbnailUrl = activeThumbnailUrl,
+                    onClick = { onTabSelected(AppTab.DOWNLOADER) },
+                    onPauseDownload = onPauseDownload,
+                    onResumeDownload = onResumeDownload,
+                    modifier = Modifier.weight(1f),
+                )
+
+                AnimatedVisibility(
+                    visible = dockMinimized,
+                    enter = slideInHorizontally(initialOffsetX = { it }) +
+                        expandHorizontally(expandFrom = Alignment.End) + fadeIn(),
+                    exit = slideOutHorizontally(targetOffsetX = { it }) +
+                        shrinkHorizontally(shrinkTowards = Alignment.End) + fadeOut(),
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Spacer(Modifier.width(10.dp))
+                        DockCircleButton(
+                            icon = Icons.Rounded.Settings,
+                            contentDescription = "Settings",
+                            selected = activeTab == AppTab.SETTINGS,
+                            onClick = { onTabSelected(AppTab.SETTINGS) },
                         )
                     }
                 }
-
-                // Active transfer pill (thumbnail + title/progress + pause/resume button)
-                Surface(
-                    shape = RoundedCornerShape(30.dp),
-                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.85f)),
-                    shadowElevation = 12.dp,
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(58.dp)
-                        .clip(RoundedCornerShape(30.dp))
-                        .clickable { onTabSelected(AppTab.DOWNLOADER) },
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(start = 8.dp, end = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        if (!activeThumbnailUrl.isNullOrBlank()) {
-                            AsyncImage(
-                                model = activeThumbnailUrl,
-                                contentDescription = title,
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier
-                                    .size(42.dp)
-                                    .clip(RoundedCornerShape(10.dp)),
-                            )
-                        } else {
-                            Box(
-                                modifier = Modifier
-                                    .size(42.dp)
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .background(MaterialTheme.colorScheme.primaryContainer),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Rounded.Download,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                                    modifier = Modifier.size(20.dp),
-                                )
-                            }
-                        }
-
-                        Column(
-                            modifier = Modifier.weight(1f),
-                            verticalArrangement = Arrangement.spacedBy(2.dp),
-                        ) {
-                            Text(
-                                text = title.ifBlank { "Zardit Download" },
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Text(
-                                text = subtitle,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            if (progress > 0f) {
-                                LinearProgressIndicator(
-                                    progress = { (progress / 100f).coerceIn(0f, 1f) },
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(2.dp)
-                                        .clip(RoundedCornerShape(1.dp)),
-                                )
-                            } else {
-                                LinearProgressIndicator(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(2.dp)
-                                        .clip(RoundedCornerShape(1.dp)),
-                                )
-                            }
-                        }
-
-                        IconButton(
-                            onClick = { if (isPausedState) onResumeDownload() else onPauseDownload() },
-                            modifier = Modifier.size(42.dp),
-                        ) {
-                            Icon(
-                                imageVector = if (isPausedState) Icons.Rounded.PlayArrow else Icons.Rounded.Pause,
-                                contentDescription = if (isPausedState) "Resume download" else "Pause download",
-                                tint = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.size(24.dp),
-                            )
-                        }
-                    }
-                }
             }
-        } else {
+        }
+
+        // Primary 3-tab bottom pill dock (slides away when scrolling long content).
+        AnimatedVisibility(
+            visible = !dockMinimized,
+            enter = slideInVertically(initialOffsetY = { it }) + expandVertically() + fadeIn(),
+            exit = slideOutVertically(targetOffsetY = { it }) + shrinkVertically() + fadeOut(),
+        ) {
             Surface(
                 shape = RoundedCornerShape(32.dp),
                 color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
@@ -2132,6 +2063,172 @@ private fun FloatingBottomDock(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DockCircleButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    contentDescription: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    Surface(
+        shape = CircleShape,
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.85f)),
+        shadowElevation = 12.dp,
+        modifier = Modifier
+            .size(58.dp)
+            .clip(CircleShape)
+            .clickable(onClick = onClick),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(5.dp)
+                .clip(CircleShape)
+                .background(
+                    if (selected) {
+                        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.13f)
+                    } else {
+                        Color.Transparent
+                    },
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = contentDescription,
+                tint = if (selected) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                modifier = Modifier.size(24.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun ActiveTransferPill(
+    downloadState: DownloadState,
+    activeThumbnailUrl: String?,
+    onClick: () -> Unit,
+    onPauseDownload: () -> Unit,
+    onResumeDownload: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val title = when (downloadState) {
+        is DownloadState.Running -> downloadState.title
+        is DownloadState.Paused -> downloadState.title
+        else -> "Downloading"
+    }
+    val progress = when (downloadState) {
+        is DownloadState.Running -> downloadState.progressPercent
+        is DownloadState.Paused -> downloadState.progressPercent
+        else -> 0f
+    }
+    val subtitle = when (downloadState) {
+        is DownloadState.Running -> downloadState.statusLine
+        is DownloadState.Paused -> "Paused · ${downloadState.progressPercent.toInt()}%"
+        else -> ""
+    }
+    val isPausedState = downloadState is DownloadState.Paused
+
+    Surface(
+        shape = RoundedCornerShape(30.dp),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.85f)),
+        shadowElevation = 12.dp,
+        modifier = modifier
+            .height(58.dp)
+            .clip(RoundedCornerShape(30.dp))
+            .clickable(onClick = onClick),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(start = 8.dp, end = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            if (!activeThumbnailUrl.isNullOrBlank()) {
+                AsyncImage(
+                    model = activeThumbnailUrl,
+                    contentDescription = title,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .size(42.dp)
+                        .clip(RoundedCornerShape(10.dp)),
+                )
+            } else {
+                Box(
+                    modifier = Modifier
+                        .size(42.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Download,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+            }
+
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(
+                    text = title.ifBlank { "Zardit Download" },
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (progress > 0f) {
+                    LinearProgressIndicator(
+                        progress = { (progress / 100f).coerceIn(0f, 1f) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(2.dp)
+                            .clip(RoundedCornerShape(1.dp)),
+                    )
+                } else {
+                    LinearProgressIndicator(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(2.dp)
+                            .clip(RoundedCornerShape(1.dp)),
+                    )
+                }
+            }
+
+            IconButton(
+                onClick = { if (isPausedState) onResumeDownload() else onPauseDownload() },
+                modifier = Modifier.size(42.dp),
+            ) {
+                Icon(
+                    imageVector = if (isPausedState) Icons.Rounded.PlayArrow else Icons.Rounded.Pause,
+                    contentDescription = if (isPausedState) "Resume download" else "Pause download",
+                    tint = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.size(24.dp),
+                )
             }
         }
     }
