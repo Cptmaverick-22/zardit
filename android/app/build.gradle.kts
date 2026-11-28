@@ -22,8 +22,8 @@ android {
     applicationId = "io.github.cptmaverick_22.zardit"
     minSdk = 24
     targetSdk = 36
-    versionCode = 9
-    versionName = "1.5.0"
+    versionCode = 10
+    versionName = "1.5.1"
     buildConfigField("String", "GIT_COMMIT", "\"$gitCommit\"")
     buildConfigField("long", "BUILD_TIME_SEC", "${buildTimeSec}L")
   }

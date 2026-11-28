@@ -141,19 +141,22 @@ jobs:
             echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > "$RUNNER_TEMP/zardit-release.jks"
             export ANDROID_KEYSTORE_FILE="$RUNNER_TEMP/zardit-release.jks"
           fi
-          ./gradlew testDebugUnitTest assembleRelease --no-daemon
+          ./gradlew testDebugUnitTest :app:assembleRelease :ffmpeg-addon:assembleRelease --no-daemon
 
-      - name: Package Android APK
+      - name: Package Android APKs
         run: |
           VERSION="$(python3 -c 'import config; print(config.APP_VERSION)')"
           mkdir -p dist
           cp android/app/build/outputs/apk/release/app-arm64-v8a-release.apk "dist/Zardit-${VERSION}-android-arm64.apk"
+          cp android/ffmpeg-addon/build/outputs/apk/release/ffmpeg-addon-arm64-v8a-release.apk "dist/Zardit-FFmpeg-Addon-${VERSION}-android-arm64.apk"
 
-      - name: Upload Android release artifact
+      - name: Upload Android release artifacts
         uses: actions/upload-artifact@v6
         with:
           name: zardit-android-apk
-          path: dist/Zardit-*-android-arm64.apk
+          path: |
+            dist/Zardit-*-android-arm64.apk
+            dist/Zardit-FFmpeg-Addon-*-android-arm64.apk
 
   publish-release:
     needs: [build-linux, build-windows, build-android]

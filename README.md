@@ -73,7 +73,7 @@ Prebuilt packages on [GitHub Releases](https://github.com/Cptmaverick-22/zardit/
 |---|---|---|
 | **Linux (x86_64)** | `Zardit-<version>-x86_64.AppImage` | Release build + Linux CI (Pyflakes & unit suite) |
 | **Windows 10 / 11 (x64)** | `Zardit-<version>-win64-setup.exe` or `portable.zip` | Release build + Windows CI (Pyflakes & unit suite) |
-| **Android 7.0+ (`arm64-v8a`)** | `Zardit-<version>-android-arm64.apk` | Release APK built cleanly in Android CI |
+| **Android 7.0+ (`arm64-v8a`)** | `Zardit-<version>-android-arm64.apk` (+ optional `Zardit-FFmpeg-Addon-<version>-android-arm64.apk`) | Release APKs built cleanly in Android CI |
 | **macOS** | Source install (`brew` + `.venv`) | Source path provided; no prebuilt `.dmg` published |
 
 > **Note:** CI builds confirm compilation and automated desktop checks pass; they do not replace live testing on every target device and OS configuration. Check each release page for exact attached assets.
@@ -216,7 +216,7 @@ python zardit_app.py
 Start it with `zardit-cli`, `./Zardit-*-x86_64.AppImage --cli`, or `python main.py`:
 
 ```text
-  ╭─ ▶ Zardit v1.5.0 ──────────────────────────────────────────────────────────╮
+  ╭─ ▶ Zardit v1.5.1 ──────────────────────────────────────────────────────────╮
   │                                                                            │
   │  Tagline  Blaze through videos, audio & playlists across every platform.   │
   │  Save to  ~/Downloads/Zardit                                               │

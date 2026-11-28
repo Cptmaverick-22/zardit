@@ -30,12 +30,14 @@ jobs:
       - name: Setup Gradle cache
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Run unit tests & build slim arm64-v8a APK
+      - name: Run unit tests & build slim arm64-v8a APKs
         working-directory: android
-        run: ./gradlew testDebugUnitTest assembleRelease --no-daemon
+        run: ./gradlew testDebugUnitTest :app:assembleRelease :ffmpeg-addon:assembleRelease --no-daemon
 
-      - name: Upload Android APK artifact
+      - name: Upload Android APK artifacts
         uses: actions/upload-artifact@v6
         with:
           name: zardit-android-arm64
-          path: android/app/build/outputs/apk/release/app-arm64-v8a-release.apk
+          path: |
+            android/app/build/outputs/apk/release/app-arm64-v8a-release.apk
+            android/ffmpeg-addon/build/outputs/apk/release/ffmpeg-addon-arm64-v8a-release.apk

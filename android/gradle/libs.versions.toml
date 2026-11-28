@@ -41,6 +41,7 @@ androidx-navigation3-runtime = { module = "androidx.navigation3:navigation3-runt
 androidx-navigation3-ui = { module = "androidx.navigation3:navigation3-ui", version.ref = "nav3Core" }
 androidx-lifecycle-viewmodel-navigation3 = { module = "androidx.lifecycle:lifecycle-viewmodel-navigation3", version.ref = "lifecycleViewmodelNav3" }
 youtubedl-library = { module = "io.github.junkfood02.youtubedl-android:library", version.ref = "youtubedlAndroid" }
+youtubedl-ffmpeg = { module = "io.github.junkfood02.youtubedl-android:ffmpeg", version.ref = "youtubedlAndroid" }
 coil-compose = { module = "io.coil-kt:coil-compose", version.ref = "coil" }
 androidx-documentfile = { module = "androidx.documentfile:documentfile", version.ref = "documentfile" }
 androidx-media3-muxer = { module = "androidx.media3:media3-muxer", version.ref = "media3" }

@@ -38,6 +38,11 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        viewModel.refreshFfmpegAddonState()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         handleShareIntent(intent)

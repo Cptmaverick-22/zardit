@@ -696,27 +696,31 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
                         _uiState.update {
                             it.copy(ffmpegStatus = "Downloading & verifying ${avail.asset.name}…")
                         }
-                        FfmpegAddonManager.install(app, avail.asset) { pct ->
+                        val apkFile = FfmpegAddonManager.downloadAndVerifyApk(app, avail.asset) { pct ->
                             _uiState.update { it.copy(ffmpegDownloadPct = pct) }
                         }
-                        "FFmpeg addon installed (SHA-256 verified). MP3 options enabled."
+                        _uiState.update {
+                            it.copy(pendingInstallApkPath = apkFile.absolutePath)
+                        }
+                        if (AppUpdater.canInstallPackages(app)) {
+                            runCatching { AppUpdater.launchApkInstall(app, apkFile) }
+                                .fold(
+                                    onSuccess = {
+                                        _uiState.update { it.copy(needInstallPermissionPrompt = false) }
+                                        "SHA-256 verified. Follow Android prompt to finish installing Zardit FFmpeg Addon."
+                                    },
+                                    onFailure = { err ->
+                                        "Could not launch addon installer: ${err.message}"
+                                    },
+                                )
+                        } else {
+                            _uiState.update { it.copy(needInstallPermissionPrompt = true) }
+                            "Verified! Allow 'Install unknown apps' to install Zardit FFmpeg Addon."
+                        }
                     }
                 }
             }.onSuccess { msg ->
-                val installed = FfmpegAddonManager.isInstalled(app)
-                val size = FfmpegAddonManager.installedSizeBytes(app)
-                _uiState.update { state ->
-                    val updatedPreview = state.preview?.let { p ->
-                        p.copy(audioOptions = ZarditEngine.audioOptionsWithAddon(app, p.audioOptions))
-                    }
-                    state.copy(
-                        isInstallingFfmpeg = false,
-                        ffmpegInstalled = installed,
-                        ffmpegSizeBytes = size,
-                        ffmpegStatus = msg,
-                        preview = updatedPreview,
-                    )
-                }
+                refreshFfmpegAddonState(statusOverride = msg)
             }.onFailure { err ->
                 _uiState.update {
                     it.copy(
@@ -729,15 +733,45 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun removeFfmpegAddon() {
-        FfmpegAddonManager.uninstall(app)
+        val launched = FfmpegAddonManager.launchUninstall(app)
+        _uiState.update {
+            it.copy(
+                ffmpegStatus = if (launched) {
+                    "Confirm uninstall in Android prompt to remove Zardit FFmpeg Addon cleanly."
+                } else {
+                    "FFmpeg addon is not installed."
+                },
+            )
+        }
+        if (!launched) {
+            refreshFfmpegAddonState()
+        }
+    }
+
+    fun refreshFfmpegAddonState(statusOverride: String? = null) {
+        val installed = FfmpegAddonManager.isInstalled(app)
+        val size = FfmpegAddonManager.installedSizeBytes(app)
         _uiState.update { state ->
-            val cleanedAudio = state.preview?.audioOptions?.filterNot { it.requiresFfmpeg }
-            val updatedPreview = state.preview?.copy(audioOptions = cleanedAudio.orEmpty())
+            val updatedPreview = state.preview?.let { p ->
+                val base = p.audioOptions.filterNot { it.requiresFfmpeg }
+                val refreshed = if (installed) ZarditEngine.audioOptionsWithAddon(app, base) else base
+                p.copy(audioOptions = refreshed)
+            }
+            val nextStatus = when {
+                statusOverride != null -> statusOverride
+                !state.isInstallingFfmpeg && state.ffmpegInstalled != installed -> if (installed) {
+                    "FFmpeg addon active: MP3 encoding, cover art & fallback muxing unlocked."
+                } else {
+                    "FFmpeg addon removed. Base MP4/M4A features unaffected."
+                }
+                else -> state.ffmpegStatus
+            }
             state.copy(
-                ffmpegInstalled = false,
-                ffmpegSizeBytes = null,
-                ffmpegStatus = "FFmpeg addon removed. Base MP4/M4A features unaffected.",
-                selectedAudioId = if (state.selectedAudioId.startsWith("mp3_")) "orig_m4a" else state.selectedAudioId,
+                isInstallingFfmpeg = false,
+                ffmpegInstalled = installed,
+                ffmpegSizeBytes = size,
+                ffmpegStatus = nextStatus,
+                selectedAudioId = if (!installed && state.selectedAudioId.startsWith("mp3_")) "orig_m4a" else state.selectedAudioId,
                 preview = updatedPreview,
             )
         }

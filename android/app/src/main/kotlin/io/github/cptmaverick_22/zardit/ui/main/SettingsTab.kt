@@ -261,7 +261,7 @@ internal fun SettingsTab(
                     )
                 }
                 Text(
-                    text = "Base APK stays lightweight using Media3. Add FFmpeg on demand (SHA-256 verified) to unlock direct MP3 encoding (192 & 320 kbps).",
+                    text = "Base APK stays lightweight using Media3. Add the optional Zardit FFmpeg companion plugin APK (SHA-256 verified) for 128–320 kbps MP3, embedded cover art, and fallback muxing — uninstall cleanly anytime.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

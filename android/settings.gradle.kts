@@ -32,4 +32,4 @@ plugins {
 
 rootProject.name = "Zardit"
 
-include(":app")
+include(":app", ":ffmpeg-addon")

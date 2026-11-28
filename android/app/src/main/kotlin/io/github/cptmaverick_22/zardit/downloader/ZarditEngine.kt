@@ -45,8 +45,17 @@ object ZarditEngine {
         AudioOption(
             id = "mp3_320",
             label = "320 kbps MP3",
-            subtitle = "MP3 · Maximum quality (FFmpeg)",
+            subtitle = "MP3 · Maximum quality + cover art (FFmpeg)",
             bitrateKbps = 320,
+            isOriginal = false,
+            requiresFfmpeg = true,
+            ext = "mp3",
+        ),
+        AudioOption(
+            id = "mp3_256",
+            label = "256 kbps MP3",
+            subtitle = "MP3 · High quality + cover art (FFmpeg)",
+            bitrateKbps = 256,
             isOriginal = false,
             requiresFfmpeg = true,
             ext = "mp3",
@@ -54,8 +63,17 @@ object ZarditEngine {
         AudioOption(
             id = "mp3_192",
             label = "192 kbps MP3",
-            subtitle = "MP3 · Balanced quality (FFmpeg)",
+            subtitle = "MP3 · Balanced quality + cover art (FFmpeg)",
             bitrateKbps = 192,
+            isOriginal = false,
+            requiresFfmpeg = true,
+            ext = "mp3",
+        ),
+        AudioOption(
+            id = "mp3_128",
+            label = "128 kbps MP3",
+            subtitle = "MP3 · Compact size + cover art (FFmpeg)",
+            bitrateKbps = 128,
             isOriginal = false,
             requiresFfmpeg = true,
             ext = "mp3",
@@ -1975,6 +1993,31 @@ object ZarditEngine {
         }
     }
 
+    private fun prepareCoverArtFile(workDir: File, coverUrl: String?): File? {
+        if (coverUrl.isNullOrBlank() || !ZarditParser.isSafePublicUrl(coverUrl)) return null
+        val target = File(workDir, "cover_art.jpg")
+        return runCatching {
+            val conn = (URL(coverUrl).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 8_000
+                readTimeout = 10_000
+                instanceFollowRedirects = true
+                setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/125.0 Mobile Safari/537.36")
+            }
+            try {
+                if (conn.responseCode in 200..299) {
+                    val bytes = conn.inputStream.use { it.readBytes() }
+                    if (bytes.size in 128..(8 * 1024 * 1024)) {
+                        target.writeBytes(bytes)
+                        return@runCatching target
+                    }
+                }
+            } finally {
+                conn.disconnect()
+            }
+            null
+        }.getOrNull()
+    }
+
     private fun downloadDirectHttp(
         fileUrl: String,
         destFile: File,
@@ -2031,6 +2074,8 @@ object ZarditEngine {
         needsAudioMux: Boolean = false,
         resumeDir: File? = null,
         shouldKeepWorkDirOnExit: () -> Boolean = { false },
+        coverUrl: String? = null,
+        artistName: String? = null,
         onProgress: (Float, String) -> Unit,
     ): SaveResult {
         val qTag = qualityTag(mode, videoHeight, audioOption)
@@ -2039,6 +2084,19 @@ object ZarditEngine {
                 deleteRecursively()
             }
             mkdirs()
+        }
+
+        fun muxOrFallback(vidFile: File, audFile: File, outFile: File) {
+            try {
+                NativeMuxer.muxMp4(vidFile, audFile, outFile)
+            } catch (muxErr: Throwable) {
+                if (FfmpegAddonManager.isInstalled(context) &&
+                    FfmpegAddonManager.muxToMp4(context, vidFile, audFile, outFile)
+                ) {
+                    return
+                }
+                throw muxErr
+            }
         }
 
         try {
@@ -2053,8 +2111,18 @@ object ZarditEngine {
                 downloadDirectHttp(directAudioUrl, srcFile, 10f, if (wantMp3) 70f else 85f, onProgress)
                 if (wantMp3) {
                     onProgress(85f, "85% · Converting to MP3 (FFmpeg)…")
+                    val coverFile = prepareCoverArtFile(workDir, coverUrl)
                     val mp3Out = File(workDir, "${safePrefix ?: "Audio"} [$qTag] [$mediaId].mp3")
-                    if (FfmpegAddonManager.convertAudioToMp3(context, srcFile, mp3Out, audioOption?.bitrateKbps ?: 192)) {
+                    if (FfmpegAddonManager.convertAudioToMp3(
+                            context = context,
+                            inputFile = srcFile,
+                            outputMp3 = mp3Out,
+                            bitrateKbps = audioOption?.bitrateKbps ?: 192,
+                            coverFile = coverFile,
+                            title = customTitle ?: safePrefix,
+                            artist = artistName,
+                        )
+                    ) {
                         return saveOutputFile(context, mp3Out, mode, treeUri)
                     }
                 }
@@ -2070,7 +2138,7 @@ object ZarditEngine {
                     downloadDirectHttp(directVideoUrl, vidTemp, 5f, 70f, onProgress)
                     downloadDirectHttp(directAudioUrl, audTemp, 75f, 18f, onProgress)
                     onProgress(95f, ZarditFlavor.formatProgressLine("ffmpeg", 95f))
-                    NativeMuxer.muxMp4(vidTemp, audTemp, outFile)
+                    muxOrFallback(vidTemp, audTemp, outFile)
                 } else {
                     downloadDirectHttp(directVideoUrl, outFile, 5f, 92f, onProgress)
                 }
@@ -2122,8 +2190,18 @@ object ZarditEngine {
                     ?: error("Download finished, but no output file was found.")
                 if (wantMp3) {
                     onProgress(88f, "88% · Converting to MP3 (FFmpeg)…")
+                    val coverFile = prepareCoverArtFile(workDir, coverUrl)
                     val mp3Out = File(workDir, "${outputFile.nameWithoutExtension}.mp3")
-                    if (FfmpegAddonManager.convertAudioToMp3(context, outputFile, mp3Out, audioOption?.bitrateKbps ?: 192)) {
+                    if (FfmpegAddonManager.convertAudioToMp3(
+                            context = context,
+                            inputFile = outputFile,
+                            outputMp3 = mp3Out,
+                            bitrateKbps = audioOption?.bitrateKbps ?: 192,
+                            coverFile = coverFile,
+                            title = customTitle ?: safePrefix,
+                            artist = artistName,
+                        )
+                    ) {
                         return saveOutputFile(context, mp3Out, mode, treeUri)
                     }
                 }
@@ -2179,7 +2257,7 @@ object ZarditEngine {
                             .find(url)?.groupValues?.getOrNull(1) ?: url.hashCode().toString()
                         val finalName = "${safePrefix ?: "Video"} [$qTag] [$id].mp4"
                         val muxedOut = File(workDir, finalName)
-                        NativeMuxer.muxMp4(vidTemp, audTemp, muxedOut)
+                        muxOrFallback(vidTemp, audTemp, muxedOut)
                         saveOutputFile(context, muxedOut, mode, treeUri)
                     } else {
                         null

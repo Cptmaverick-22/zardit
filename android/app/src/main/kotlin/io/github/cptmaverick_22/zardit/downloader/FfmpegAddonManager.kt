@@ -1,7 +1,12 @@
 package io.github.cptmaverick_22.zardit.downloader
 
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
+import android.os.Bundle
+import androidx.core.content.FileProvider
 import io.github.cptmaverick_22.zardit.data.DiagnosticLog
 import java.io.File
 import java.io.IOException
@@ -9,6 +14,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
 import java.util.Locale
+import java.util.UUID
 import org.json.JSONObject
 
 data class FfmpegAddonAsset(
@@ -25,38 +31,67 @@ sealed interface FfmpegAddonAvailability {
 }
 
 /**
- * Manages an optional static FFmpeg binary stored strictly in app-private storage.
+ * Manages the optional Zardit FFmpeg companion plugin APK (`io.github.cptmaverick_22.zardit.ffmpeg`).
  *
- * Keeps the base Zardit APK small (~21 MB) while allowing users who want MP3
- * conversion / non-MP4 audio extraction to install FFmpeg on demand with strict
- * SHA-256 verification against SHA256SUMS.txt.
+ * Distributing FFmpeg as an on-demand companion APK keeps the base Zardit APK slim (~41 MB),
+ * remains W^X / SELinux compliant on Android 10–17 (binaries live inside the addon's
+ * read-only nativeLibraryDir), and lets users install or completely uninstall it cleanly.
  */
 object FfmpegAddonManager {
+
+    const val ADDON_PACKAGE_ID = "io.github.cptmaverick_22.zardit.ffmpeg"
+    const val ADDON_AUTHORITY = "io.github.cptmaverick_22.zardit.ffmpeg.provider"
+
+    private const val METHOD_PING = "ping"
+    private const val METHOD_CONVERT_MP3 = "convert_mp3"
+    private const val METHOD_MUX_MP4 = "mux_mp4"
+
+    private const val KEY_OK = "ok"
+    private const val KEY_ERROR = "error"
+    private const val KEY_INPUT_URI = "input_uri"
+    private const val KEY_COVER_URI = "cover_uri"
+    private const val KEY_OUTPUT_URI = "output_uri"
+    private const val KEY_VIDEO_URI = "video_uri"
+    private const val KEY_AUDIO_URI = "audio_uri"
+    private const val KEY_BITRATE_KBPS = "bitrate_kbps"
+    private const val KEY_TITLE = "title"
+    private const val KEY_ARTIST = "artist"
 
     private const val RELEASES_LATEST_URL = "https://api.github.com/repos/Cptmaverick-22/zardit/releases/latest"
     private const val MAX_JSON_BYTES = 2 * 1024 * 1024
     private const val MAX_SUMS_BYTES = 128 * 1024
-    private const val MIN_BINARY_BYTES = 100 * 1024L
-    private const val MAX_BINARY_BYTES = 120 * 1024 * 1024L
-
-    fun binaryFile(context: Context): File {
-        val dir = File(context.applicationContext.filesDir, "ffmpeg")
-        return File(dir, "ffmpeg")
-    }
+    private const val MIN_APK_BYTES = 512 * 1024L
+    private const val MAX_APK_BYTES = 150 * 1024 * 1024L
 
     fun isInstalled(context: Context): Boolean {
-        val bin = binaryFile(context)
-        return bin.isFile && bin.length() >= MIN_BINARY_BYTES && bin.canExecute()
+        val pm = context.packageManager
+        val info = runCatching { pm.getApplicationInfo(ADDON_PACKAGE_ID, 0) }.getOrNull() ?: return false
+        return info.enabled
     }
 
     fun installedSizeBytes(context: Context): Long? {
-        val bin = binaryFile(context)
-        return if (isInstalled(context)) bin.length() else null
+        val pm = context.packageManager
+        val info = runCatching { pm.getApplicationInfo(ADDON_PACKAGE_ID, 0) }.getOrNull() ?: return null
+        val apkBytes = info.sourceDir?.let(::File)?.takeIf { it.isFile }?.length() ?: 0L
+        val libBytes = info.nativeLibraryDir?.let(::File)
+            ?.takeIf { it.isDirectory }
+            ?.walkTopDown()
+            ?.filter { it.isFile }
+            ?.sumOf { it.length() }
+            ?: 0L
+        val total = apkBytes + libBytes
+        return total.takeIf { it > 0L }
     }
 
-    fun uninstall(context: Context) {
-        val dir = File(context.applicationContext.filesDir, "ffmpeg")
-        runCatching { dir.deleteRecursively() }
+    fun launchUninstall(context: Context): Boolean {
+        if (!isInstalled(context)) return false
+        return runCatching {
+            val intent = Intent(Intent.ACTION_DELETE, Uri.parse("package:$ADDON_PACKAGE_ID")).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+            true
+        }.getOrDefault(false)
     }
 
     fun checkAvailability(timeoutMs: Int = 12_000): FfmpegAddonAvailability {
@@ -65,7 +100,7 @@ object FfmpegAddonManager {
         )
         val tagName = release.optString("tag_name").trim().ifBlank { "latest" }
         val assetsArr = release.optJSONArray("assets")
-            ?: return FfmpegAddonAvailability.NotPublished("FFmpeg addon package is not published for $tagName yet.")
+            ?: return FfmpegAddonAvailability.NotPublished("FFmpeg addon APK is not published for $tagName yet.")
 
         var sumsUrl = ""
         val candidates = mutableListOf<JSONObject>()
@@ -81,7 +116,7 @@ object FfmpegAddonManager {
 
         val chosen = selectBestAddonAsset(candidates)
             ?: return FfmpegAddonAvailability.NotPublished(
-                "Optional FFmpeg binary asset is not published in release $tagName yet. Base MP4/M4A/image features already work without it.",
+                "Optional FFmpeg addon APK is not published in release $tagName yet. Base MP4/M4A/image features already work without it.",
             )
 
         if (sumsUrl.isBlank()) {
@@ -96,7 +131,7 @@ object FfmpegAddonManager {
             ?: return FfmpegAddonAvailability.NotPublished("Missing SHA-256 digest for $name in SHA256SUMS.txt.")
 
         if (!isTrustedReleaseUrl(downloadUrl)) {
-            return FfmpegAddonAvailability.NotPublished("Untrusted FFmpeg asset host.")
+            return FfmpegAddonAvailability.NotPublished("Untrusted FFmpeg addon URL.")
         }
 
         return FfmpegAddonAvailability.Available(
@@ -110,18 +145,16 @@ object FfmpegAddonManager {
         )
     }
 
-    fun install(
+    fun downloadAndVerifyApk(
         context: Context,
         asset: FfmpegAddonAsset,
         onProgress: (Int) -> Unit = {},
     ): File {
         require(isTrustedReleaseUrl(asset.downloadUrl)) { "Untrusted download URL." }
-        val target = binaryFile(context)
-        val dir = target.parentFile ?: error("Missing addon directory.")
-        dir.mkdirs()
-
-        val temp = File(dir, "ffmpeg.part")
-        temp.delete()
+        val dir = File(context.cacheDir, "app_updates").apply { mkdirs() }
+        val target = File(dir, asset.name.replace(Regex("[^A-Za-z0-9._-]"), "_"))
+        val part = File(dir, "${target.name}.part")
+        part.delete()
 
         val digest = MessageDigest.getInstance("SHA-256")
         val conn = (URL(asset.downloadUrl).openConnection() as HttpURLConnection).apply {
@@ -133,7 +166,7 @@ object FfmpegAddonManager {
         try {
             val code = conn.responseCode
             if (code !in 200..299) {
-                throw IOException("HTTP $code downloading FFmpeg addon")
+                throw IOException("HTTP $code downloading FFmpeg addon APK")
             }
             val finalHost = conn.url?.host.orEmpty().lowercase(Locale.US)
             if (conn.url?.protocol != "https" || !isTrustedDownloadHost(finalHost)) {
@@ -142,14 +175,14 @@ object FfmpegAddonManager {
             val total = asset.sizeBytes.takeIf { it > 0L } ?: conn.contentLengthLong
             var downloaded = 0L
             conn.inputStream.use { input ->
-                temp.outputStream().use { output ->
+                part.outputStream().use { output ->
                     val buf = ByteArray(16 * 1024)
                     while (true) {
                         val n = input.read(buf)
                         if (n <= 0) break
                         downloaded += n
-                        if (downloaded > MAX_BINARY_BYTES) {
-                            throw IOException("FFmpeg addon exceeded maximum allowed size.")
+                        if (downloaded > MAX_APK_BYTES) {
+                            throw IOException("FFmpeg addon APK exceeded maximum allowed size.")
                         }
                         digest.update(buf, 0, n)
                         output.write(buf, 0, n)
@@ -165,21 +198,19 @@ object FfmpegAddonManager {
 
         val actualSha = digest.digest().joinToString("") { "%02x".format(it) }
         if (!actualSha.equals(asset.sha256, ignoreCase = true)) {
-            temp.delete()
+            part.delete()
             throw SecurityException("SHA-256 verification failed for ${asset.name}.")
         }
-
-        if (temp.length() < MIN_BINARY_BYTES) {
-            temp.delete()
-            throw IOException("Downloaded FFmpeg binary looks incomplete.")
+        if (part.length() < MIN_APK_BYTES) {
+            part.delete()
+            throw IOException("Downloaded FFmpeg addon APK looks incomplete.")
         }
 
         target.delete()
-        if (!temp.renameTo(target)) {
-            temp.copyTo(target, overwrite = true)
-            temp.delete()
+        if (!part.renameTo(target)) {
+            part.copyTo(target, overwrite = true)
+            part.delete()
         }
-        target.setExecutable(true, true)
         onProgress(100)
         return target
     }
@@ -189,40 +220,143 @@ object FfmpegAddonManager {
         inputFile: File,
         outputMp3: File,
         bitrateKbps: Int = 192,
+        coverFile: File? = null,
+        title: String? = null,
+        artist: String? = null,
     ): Boolean {
-        val bin = binaryFile(context)
-        if (!isInstalled(context)) return false
-        return runCatching {
-            val process = ProcessBuilder(
-                bin.absolutePath,
-                "-y",
-                "-i",
-                inputFile.absolutePath,
-                "-vn",
-                "-acodec",
-                "libmp3lame",
-                "-b:a",
-                "${bitrateKbps}k",
-                outputMp3.absolutePath,
-            )
-                .redirectErrorStream(true)
-                .start()
-            val logOutput = process.inputStream.bufferedReader().use { it.readText() }
-            val exit = process.waitFor()
-            if (exit != 0 || !outputMp3.isFile || outputMp3.length() < 1024L) {
-                DiagnosticLog.log("FfmpegMp3Err", "exit=$exit ${logOutput.takeLast(300)}")
-                false
-            } else {
-                true
+        if (!isInstalled(context) || !inputFile.isFile) return false
+        val ipcDir = File(context.cacheDir, "ffmpeg_ipc/${UUID.randomUUID()}").apply { mkdirs() }
+        val grantedUris = mutableListOf<Uri>()
+        return try {
+            val sharedIn = File(ipcDir, "in.media").also { inputFile.copyTo(it, overwrite = true) }
+            val sharedOut = File(ipcDir, "out.mp3").apply { createNewFile() }
+            val authority = "${context.packageName}.fileprovider"
+
+            val inUri = FileProvider.getUriForFile(context, authority, sharedIn).also {
+                context.grantUriPermission(ADDON_PACKAGE_ID, it, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                grantedUris += it
             }
-        }.onFailure { err ->
-            DiagnosticLog.log("FfmpegMp3Err", err.message ?: err::class.java.simpleName)
-        }.getOrDefault(false)
+            val outUri = FileProvider.getUriForFile(context, authority, sharedOut).also {
+                context.grantUriPermission(
+                    ADDON_PACKAGE_ID,
+                    it,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+                )
+                grantedUris += it
+            }
+            val coverUri = if (coverFile != null && coverFile.isFile && coverFile.length() > 64L) {
+                val sharedCover = File(ipcDir, "cover.jpg").also { coverFile.copyTo(it, overwrite = true) }
+                FileProvider.getUriForFile(context, authority, sharedCover).also {
+                    context.grantUriPermission(ADDON_PACKAGE_ID, it, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    grantedUris += it
+                }
+            } else {
+                null
+            }
+
+            val extras = Bundle().apply {
+                putParcelable(KEY_INPUT_URI, inUri)
+                putParcelable(KEY_OUTPUT_URI, outUri)
+                coverUri?.let { putParcelable(KEY_COVER_URI, it) }
+                putInt(KEY_BITRATE_KBPS, bitrateKbps)
+                title?.let { putString(KEY_TITLE, it) }
+                artist?.let { putString(KEY_ARTIST, it) }
+            }
+            val res = context.contentResolver.call(
+                Uri.parse("content://$ADDON_AUTHORITY"),
+                METHOD_CONVERT_MP3,
+                null,
+                extras,
+            )
+            if (res?.getBoolean(KEY_OK, false) == true && sharedOut.isFile && sharedOut.length() >= 1024L) {
+                sharedOut.copyTo(outputMp3, overwrite = true)
+                true
+            } else {
+                val err = res?.getString(KEY_ERROR) ?: "No response from FFmpeg addon"
+                DiagnosticLog.log("FfmpegMp3Err", err)
+                false
+            }
+        } catch (t: Throwable) {
+            DiagnosticLog.log("FfmpegMp3Err", t.message ?: t::class.java.simpleName)
+            false
+        } finally {
+            grantedUris.forEach { uri ->
+                runCatching { context.revokeUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION) }
+            }
+            ipcDir.deleteRecursively()
+        }
+    }
+
+    fun muxToMp4(
+        context: Context,
+        videoFile: File,
+        audioFile: File?,
+        outputMp4: File,
+    ): Boolean {
+        if (!isInstalled(context) || !videoFile.isFile) return false
+        val ipcDir = File(context.cacheDir, "ffmpeg_ipc/${UUID.randomUUID()}").apply { mkdirs() }
+        val grantedUris = mutableListOf<Uri>()
+        return try {
+            val sharedVideo = File(ipcDir, "video.media").also { videoFile.copyTo(it, overwrite = true) }
+            val sharedOut = File(ipcDir, "out.mp4").apply { createNewFile() }
+            val authority = "${context.packageName}.fileprovider"
+
+            val videoUri = FileProvider.getUriForFile(context, authority, sharedVideo).also {
+                context.grantUriPermission(ADDON_PACKAGE_ID, it, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                grantedUris += it
+            }
+            val audioUri = if (audioFile != null && audioFile.isFile && audioFile.length() > 256L) {
+                val sharedAudio = File(ipcDir, "audio.media").also { audioFile.copyTo(it, overwrite = true) }
+                FileProvider.getUriForFile(context, authority, sharedAudio).also {
+                    context.grantUriPermission(ADDON_PACKAGE_ID, it, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    grantedUris += it
+                }
+            } else {
+                null
+            }
+            val outUri = FileProvider.getUriForFile(context, authority, sharedOut).also {
+                context.grantUriPermission(
+                    ADDON_PACKAGE_ID,
+                    it,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+                )
+                grantedUris += it
+            }
+
+            val extras = Bundle().apply {
+                putParcelable(KEY_VIDEO_URI, videoUri)
+                audioUri?.let { putParcelable(KEY_AUDIO_URI, it) }
+                putParcelable(KEY_OUTPUT_URI, outUri)
+            }
+            val res = context.contentResolver.call(
+                Uri.parse("content://$ADDON_AUTHORITY"),
+                METHOD_MUX_MP4,
+                null,
+                extras,
+            )
+            if (res?.getBoolean(KEY_OK, false) == true && sharedOut.isFile && sharedOut.length() >= 4096L) {
+                sharedOut.copyTo(outputMp4, overwrite = true)
+                true
+            } else {
+                val err = res?.getString(KEY_ERROR) ?: "No response from FFmpeg addon"
+                DiagnosticLog.log("FfmpegMuxErr", err)
+                false
+            }
+        } catch (t: Throwable) {
+            DiagnosticLog.log("FfmpegMuxErr", t.message ?: t::class.java.simpleName)
+            false
+        } finally {
+            grantedUris.forEach { uri ->
+                runCatching { context.revokeUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION) }
+            }
+            ipcDir.deleteRecursively()
+        }
     }
 
     internal fun isMatchingFfmpegAssetName(name: String): Boolean {
         val low = name.lowercase(Locale.US)
-        return low.startsWith("ffmpeg-android") && !low.endsWith(".sha256") && !low.endsWith(".txt")
+        return (low.startsWith("zardit-ffmpeg-addon") || low.startsWith("ffmpeg-android")) &&
+            low.endsWith(".apk")
     }
 
     private fun selectBestAddonAsset(candidates: List<JSONObject>): JSONObject? {

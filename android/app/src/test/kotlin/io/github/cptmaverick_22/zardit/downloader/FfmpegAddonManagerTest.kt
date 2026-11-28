@@ -11,10 +11,11 @@ class FfmpegAddonManagerTest {
 
     @Test
     fun `matches Android FFmpeg addon asset names only`() {
-        assertTrue(FfmpegAddonManager.isMatchingFfmpegAssetName("ffmpeg-android-arm64"))
-        assertTrue(FfmpegAddonManager.isMatchingFfmpegAssetName("ffmpeg-android-arm64-v8a.bin"))
-        assertFalse(FfmpegAddonManager.isMatchingFfmpegAssetName("ffmpeg-android-arm64.sha256"))
-        assertFalse(FfmpegAddonManager.isMatchingFfmpegAssetName("Zardit-1.4.2-android-arm64.apk"))
+        assertTrue(FfmpegAddonManager.isMatchingFfmpegAssetName("Zardit-FFmpeg-Addon-1.5.1-android-arm64.apk"))
+        assertTrue(FfmpegAddonManager.isMatchingFfmpegAssetName("ffmpeg-android-arm64-v8a.apk"))
+        assertFalse(FfmpegAddonManager.isMatchingFfmpegAssetName("ffmpeg-android-arm64"))
+        assertFalse(FfmpegAddonManager.isMatchingFfmpegAssetName("Zardit-FFmpeg-Addon-1.5.1-android-arm64.apk.sha256"))
+        assertFalse(FfmpegAddonManager.isMatchingFfmpegAssetName("Zardit-1.5.1-android-arm64.apk"))
         assertFalse(FfmpegAddonManager.isMatchingFfmpegAssetName("SHA256SUMS.txt"))
     }
 
@@ -24,6 +25,14 @@ class FfmpegAddonManagerTest {
         assertTrue(mp3High.requiresFfmpeg)
         assertEquals("320kbps", ZarditEngine.qualityTag(DownloadMode.AUDIO, null, mp3High))
         assertEquals("mp3", ZarditEngine.targetExtension(DownloadMode.AUDIO, mp3High))
+
+        val mp3Mid = ZarditEngine.findAudioOption("mp3_256")!!
+        assertTrue(mp3Mid.requiresFfmpeg)
+        assertEquals("256kbps", ZarditEngine.qualityTag(DownloadMode.AUDIO, null, mp3Mid))
+
+        val mp3Low = ZarditEngine.findAudioOption("mp3_128")!!
+        assertTrue(mp3Low.requiresFfmpeg)
+        assertEquals("128kbps", ZarditEngine.qualityTag(DownloadMode.AUDIO, null, mp3Low))
 
         val orig = ZarditEngine.findAudioOption("orig_m4a")!!
         assertFalse(orig.requiresFfmpeg)

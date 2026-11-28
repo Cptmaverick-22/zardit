@@ -305,6 +305,9 @@ class DownloadService : Service() {
                                 audioOption = audioOption,
                                 treeUri = treeUri,
                                 processId = pid,
+                                customTitle = itemTitle,
+                                coverUrl = itemThumb?.takeIf { it.isNotBlank() } ?: thumbnailUrl,
+                                artistName = platform.substringBefore(" ·").takeIf { it.isNotBlank() },
                             ) { pct, status ->
                                 updateProgress(title, pct, "$prefix$status")
                             }
@@ -383,6 +386,8 @@ class DownloadService : Service() {
                     needsAudioMux = needsAudioMux,
                     resumeDir = activeWorkDir,
                     shouldKeepWorkDirOnExit = { paused.get() },
+                    coverUrl = thumbnailUrl,
+                    artistName = platform.substringBefore(" ·").takeIf { it.isNotBlank() },
                 ) { pct, statusLine ->
                     updateProgress(title, pct, statusLine)
                 }

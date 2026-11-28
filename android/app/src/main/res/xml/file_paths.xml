@@ -3,4 +3,7 @@
     <cache-path
         name="app_updates"
         path="app_updates/" />
+    <cache-path
+        name="ffmpeg_ipc"
+        path="ffmpeg_ipc/" />
 </paths>
