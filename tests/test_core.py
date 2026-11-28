@@ -203,6 +203,18 @@ class LinkTests(unittest.TestCase):
 
 
 class FormattingTests(unittest.TestCase):
+    def test_brand_logo_or_login_page_filter(self):
+        from downloader import _is_brand_logo_or_login_page
+
+        self.assertTrue(
+            _is_brand_logo_or_login_page(
+                "Instagram",
+                "https://static.cdninstagram.com/rsrc.php/v4/yI/r/VsNE-OHk_8a.png",
+            )
+        )
+        self.assertTrue(_is_brand_logo_or_login_page("Log in • Instagram", "https://example.com/a.jpg"))
+        self.assertFalse(_is_brand_logo_or_login_page("Sunset clip", "https://scontent.cdninstagram.com/v/t51/real.jpg"))
+
     def test_file_size(self):
         self.assertEqual(format_file_size(None), "Unknown")
         self.assertEqual(format_file_size(500), "500.0 B")

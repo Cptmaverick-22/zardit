@@ -89,6 +89,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import coil.compose.AsyncImage
 import io.github.cptmaverick_22.zardit.BuildConfig
@@ -1133,7 +1134,7 @@ private fun HomeTab(
                     )
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
                     ) {
                         QUICK_PLATFORMS.forEach { platform ->
                             Surface(
@@ -1146,7 +1147,7 @@ private fun HomeTab(
                                     .clickable { onOpenUrl(platform.launchUrl) },
                             ) {
                                 Column(
-                                    modifier = Modifier.padding(vertical = 10.dp, horizontal = 4.dp),
+                                    modifier = Modifier.padding(vertical = 9.dp, horizontal = 2.dp),
                                     horizontalAlignment = Alignment.CenterHorizontally,
                                     verticalArrangement = Arrangement.spacedBy(6.dp),
                                 ) {
@@ -1156,11 +1157,14 @@ private fun HomeTab(
                                     )
                                     Text(
                                         text = platform.name,
-                                        style = MaterialTheme.typography.labelSmall,
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            fontSize = 10.sp,
+                                            letterSpacing = (-0.2).sp,
+                                        ),
                                         fontWeight = FontWeight.SemiBold,
                                         maxLines = 1,
                                         softWrap = false,
-                                        overflow = TextOverflow.Ellipsis,
+                                        overflow = TextOverflow.Clip,
                                     )
                                 }
                             }

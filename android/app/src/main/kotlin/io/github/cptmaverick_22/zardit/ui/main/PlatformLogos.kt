@@ -171,38 +171,31 @@ private fun ThreadsLogo(modifier: Modifier) {
     Canvas(modifier = modifier) {
         val w = size.width
         val h = size.height
-        drawCircle(
+        drawRoundRect(
             color = Color(0xFF101319),
-            radius = minOf(w, h) / 2f,
+            size = size,
+            cornerRadius = CornerRadius(w * 0.28f, w * 0.28f),
         )
-        drawCircle(
+        drawRoundRect(
             color = Color(0xFF2D3342),
-            radius = minOf(w, h) / 2f,
+            size = size,
+            cornerRadius = CornerRadius(w * 0.28f, w * 0.28f),
             style = Stroke(width = w * 0.03f),
         )
-        val strokeW = w * 0.078f
-        // Outer "@"-like open spiral and inner loop representing Threads
-        drawArc(
-            color = Color.White,
-            startAngle = -35f,
-            sweepAngle = 290f,
-            useCenter = false,
-            topLeft = Offset(w * 0.23f, h * 0.21f),
-            size = Size(w * 0.54f, h * 0.58f),
-            style = Stroke(width = strokeW, cap = StrokeCap.Round, join = StrokeJoin.Round),
-        )
-        drawCircle(
-            color = Color.White,
-            radius = w * 0.135f,
-            center = Offset(w * 0.49f, h * 0.51f),
-            style = Stroke(width = strokeW),
-        )
-        drawLine(
-            color = Color.White,
-            start = Offset(w * 0.625f, h * 0.43f),
-            end = Offset(w * 0.625f, h * 0.60f),
-            strokeWidth = strokeW,
-            cap = StrokeCap.Round,
-        )
+        val strokeW = w * 0.072f
+        val strokeStyle = Stroke(width = strokeW, cap = StrokeCap.Round, join = StrokeJoin.Round)
+        // Outer "@"-shaped Threads spiral curving cleanly from top-right through the body
+        val outerSpiral = Path().apply {
+            moveTo(w * 0.65f, h * 0.34f)
+            cubicTo(w * 0.59f, h * 0.22f, w * 0.42f, h * 0.20f, w * 0.31f, h * 0.28f)
+            cubicTo(w * 0.20f, h * 0.37f, w * 0.20f, h * 0.64f, w * 0.32f, h * 0.73f)
+            cubicTo(w * 0.43f, h * 0.81f, w * 0.63f, h * 0.79f, w * 0.72f, h * 0.66f)
+            cubicTo(w * 0.78f, h * 0.56f, w * 0.74f, h * 0.44f, w * 0.62f, h * 0.42f)
+            cubicTo(w * 0.50f, h * 0.40f, w * 0.40f, h * 0.46f, w * 0.41f, h * 0.55f)
+            cubicTo(w * 0.42f, h * 0.63f, w * 0.52f, h * 0.65f, w * 0.59f, h * 0.59f)
+            cubicTo(w * 0.65f, h * 0.54f, w * 0.65f, h * 0.44f, w * 0.59f, h * 0.38f)
+            cubicTo(w * 0.55f, h * 0.34f, w * 0.48f, h * 0.33f, w * 0.43f, h * 0.37f)
+        }
+        drawPath(outerSpiral, color = Color.White, style = strokeStyle)
     }
 }

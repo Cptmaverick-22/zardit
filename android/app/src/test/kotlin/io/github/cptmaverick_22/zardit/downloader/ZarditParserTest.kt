@@ -137,13 +137,31 @@ class ZarditParserTest {
 
     @Test
     fun extractMinimalInstagramCookies_keepsOnlyRequiredSessionFields() {
-        val header = "mid=abc; sessionid=secret_sess; csrftoken=tok_1; ds_user_id=99; ig_did=noise"
+        val header = "mid=abc; sessionid=secret_sess; csrftoken=tok_1; ds_user_id=99; ig_did=dev1; noise=skip"
         val map = ZarditParser.extractMinimalInstagramCookies(header)
         assertEquals(
-            mapOf("sessionid" to "secret_sess", "csrftoken" to "tok_1", "ds_user_id" to "99"),
+            mapOf(
+                "mid" to "abc",
+                "sessionid" to "secret_sess",
+                "csrftoken" to "tok_1",
+                "ds_user_id" to "99",
+                "ig_did" to "dev1",
+            ),
             map,
         )
         assertTrue(ZarditParser.extractMinimalInstagramCookies("csrftoken=only_csrf").isEmpty())
+    }
+
+    @Test
+    fun isBrandLogoOrLoginPage_rejectsPlatformIconsAndLoginShells() {
+        assertTrue(
+            ZarditParser.isBrandLogoOrLoginPage(
+                "Instagram",
+                "https://static.cdninstagram.com/rsrc.php/v4/yI/r/VsNE-OHk_8a.png",
+            ),
+        )
+        assertTrue(ZarditParser.isBrandLogoOrLoginPage("Log in • Instagram", "https://example.com/pic.jpg"))
+        assertFalse(ZarditParser.isBrandLogoOrLoginPage("Cool Sunset Reel", "https://scontent.cdninstagram.com/v/t51.2885-15/real.jpg"))
     }
 
     @Test

@@ -158,12 +158,6 @@ fun FacebookLoginDialog(
                                     if (minimal.isNotEmpty()) {
                                         finished = true
                                         FacebookAuth.saveCookies(context, minimal)
-                                        view?.apply {
-                                            clearHistory()
-                                            clearFormData()
-                                            clearCache(true)
-                                        }
-                                        cm.removeAllCookies(null)
                                         cm.flush()
                                         onConnected()
                                     }

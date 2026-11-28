@@ -83,6 +83,28 @@ object ZarditEngine {
         return base + extras
     }
 
+    private var igRateLimitedUntilMs: Long = 0L
+
+    private fun genuineBrowserUserAgent(context: Context?): String {
+        val fallback = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/125.0 Mobile Safari/537.36"
+        if (context == null) return fallback
+        return runCatching {
+            WebSettings.getDefaultUserAgent(context.applicationContext)
+                .replace("; wv", "")
+                .ifBlank { fallback }
+        }.getOrDefault(fallback)
+    }
+
+    private fun isIgRateLimitMessage(msg: String): Boolean {
+        val low = msg.lowercase(Locale.US)
+        return "try again later" in low ||
+            "please wait a few minutes" in low ||
+            "challenge_required" in low ||
+            "feedback_required" in low ||
+            "429" in low ||
+            "rate limit" in low
+    }
+
     fun isWifiConnected(context: Context): Boolean {
         val cm = context.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
             ?: return true
@@ -151,22 +173,32 @@ object ZarditEngine {
             }
 
             if (isIg) {
+                // Always try unauthenticated public embed BEFORE touching user's Instagram account
+                fetchInstagramEmbedFallback(cleanUrl, context)?.let { return it }
+
                 val hasIg = InstagramAuth.hasSession(context)
                 if (hasIg) {
+                    val now = System.currentTimeMillis()
+                    if (isIgRateLimitMessage(msg)) {
+                        igRateLimitedUntilMs = now + 30 * 60_000L
+                    }
+                    if (now < igRateLimitedUntilMs) {
+                        throw IllegalStateException(
+                            "Instagram temporarily limited requests to protect your account. Wait 15–30 minutes before fetching with your IG session, or use public links.",
+                        )
+                    }
                     if (!isNoVideo) {
                         fetchWithInstagramCookies(context, cleanUrl)?.let { return it }
                     }
-                    fetchInstagramApiWithCookies(context, cleanUrl)?.let { return it }
-                    if (isNoVideo) {
-                        fetchImageFallback(context, cleanUrl, useIgCookies = true)?.let { return it }
+                    if (now < igRateLimitedUntilMs) {
+                        throw IllegalStateException(
+                            "Instagram asked to slow down ('Try Again Later'). Paused IG account fetches to protect your account — wait a while before retrying.",
+                        )
                     }
                     fetchInstagramViaWebView(context, cleanUrl)?.let { return it }
-                }
-                if (isNoVideo) {
-                    fetchInstagramEmbedFallback(cleanUrl)?.let { return it }
+                } else if (isNoVideo) {
                     fetchImageFallback(context, cleanUrl, useIgCookies = false)?.let { return it }
                 }
-                fetchInstagramEmbedFallback(cleanUrl)?.let { return it }
             } else if (!isFb && isNoVideo) {
                 fetchImageFallback(context, cleanUrl, useIgCookies = false)?.let { return it }
             }
@@ -718,14 +750,9 @@ object ZarditEngine {
         cookieHeader: String?,
         usedAuth: Boolean,
     ): MediaPreview? {
-        if (cookieHeader != null) {
-            val mediaId = Regex(""""(?:media_id|pk)"\s*:\s*"(\d{10,25})"""")
-                .find(html)?.groupValues?.getOrNull(1)
-                ?: Regex("""instagram://media\?id=(\d{10,25})""")
-                    .find(html)?.groupValues?.getOrNull(1)
-            if (!mediaId.isNullOrBlank()) {
-                fetchInstagramMediaInfoById(cookieHeader, mediaId, shortcode, url)?.let { return it }
-            }
+        if ("checkpoint_required" in html || "challenge_required" in html || "Please wait a few minutes" in html) {
+            igRateLimitedUntilMs = System.currentTimeMillis() + 30 * 60_000L
+            return null
         }
 
         val windows = buildList {
@@ -825,7 +852,13 @@ object ZarditEngine {
             }
         }
         if (images.isEmpty()) {
-            meta["og:image"]?.takeIf { it.startsWith("http") && !croppedUrlRegex.containsMatchIn(it) }?.let { images.add(it) }
+            meta["og:image"]
+                ?.takeIf {
+                    it.startsWith("http") &&
+                        !croppedUrlRegex.containsMatchIn(it) &&
+                        !ZarditParser.isBrandLogoOrLoginPage(title, it)
+                }
+                ?.let { images.add(it) }
         }
         if (images.isNotEmpty()) {
             val list = images.toList()
@@ -934,9 +967,9 @@ object ZarditEngine {
                     javaScriptEnabled = true
                     domStorageEnabled = true
                     mediaPlaybackRequiresUserGesture = true
-                    cacheMode = WebSettings.LOAD_NO_CACHE
+                    cacheMode = WebSettings.LOAD_DEFAULT
                     mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
-                    userAgentString = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/125.0 Mobile Safari/537.36"
+                    userAgentString = genuineBrowserUserAgent(context)
                 }
 
                 var captured = false
@@ -985,8 +1018,6 @@ object ZarditEngine {
             runCatching {
                 webViewRef?.stopLoading()
                 webViewRef?.destroy()
-                CookieManager.getInstance().removeAllCookies(null)
-                CookieManager.getInstance().flush()
             }
         }
 
@@ -1003,7 +1034,13 @@ object ZarditEngine {
         val domImages = obj.optJSONArray("images")
         val domThumbs = if (domImages != null) {
             (0 until domImages.length())
-                .mapNotNull { domImages.optString(it).takeIf { u -> u.startsWith("http") && !croppedUrlRegex.containsMatchIn(u) } }
+                .mapNotNull {
+                    domImages.optString(it).takeIf { u ->
+                        u.startsWith("http") &&
+                            !croppedUrlRegex.containsMatchIn(u) &&
+                            !ZarditParser.isBrandLogoOrLoginPage(obj.optString("title"), u)
+                    }
+                }
                 .distinct()
         } else {
             emptyList()
@@ -1061,80 +1098,95 @@ object ZarditEngine {
         return null
     }
 
-    private fun fetchInstagramEmbedFallback(url: String): MediaPreview? {
+    private fun fetchInstagramEmbedFallback(url: String, context: Context? = null): MediaPreview? {
         val shortcode = Regex("""instagram\.com/(?:reel|reels|p|tv)/([A-Za-z0-9_-]+)""")
             .find(url)?.groupValues?.getOrNull(1) ?: return null
-        val embedUrl = "https://www.instagram.com/p/$shortcode/embed/captioned/"
+        val ua = genuineBrowserUserAgent(context)
+        val targets = listOf(
+            "https://www.instagram.com/p/$shortcode/embed/captioned/",
+            "https://www.instagram.com/reel/$shortcode/embed/",
+        )
 
-        return runCatching {
-            val conn = (URL(embedUrl).openConnection() as HttpURLConnection).apply {
-                connectTimeout = 8000
-                readTimeout = 8000
-                instanceFollowRedirects = true
-                setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/125.0 Mobile Safari/537.36")
-            }
-            val html = conn.inputStream.bufferedReader().use { it.readText().take(1024 * 1024) }
-            conn.disconnect()
-
-            val videoUrl = Regex(""""video_url"\s*:\s*"(https?:[^"]+)"""")
-                .find(html)?.groupValues?.getOrNull(1)?.unescapeJsonUrl()
-                ?: Regex("""<video[^>]+src=["'](https?://[^"']+)["']""", RegexOption.IGNORE_CASE)
-                    .find(html)?.groupValues?.getOrNull(1)?.replace("&amp;", "&")
-
-            val displayUrls = linkedSetOf<String>()
-            Regex(""""display_url"\s*:\s*"(https?:[^"]+)"""")
-                .findAll(html)
-                .forEach { m ->
-                    val u = m.groupValues[1].unescapeJsonUrl()
-                    if (!croppedUrlRegex.containsMatchIn(u)) displayUrls.add(u)
+        for (embedUrl in targets) {
+            val found = runCatching {
+                val conn = (URL(embedUrl).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 8000
+                    readTimeout = 8000
+                    instanceFollowRedirects = true
+                    setRequestProperty("User-Agent", ua)
+                    setRequestProperty("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                    setRequestProperty("Accept-Language", "en-US,en;q=0.9")
                 }
-            if (displayUrls.isEmpty()) {
-                Regex("""class=["'][^"']*EmbeddedMediaImage[^"']*["'][^>]+src=["'](https?://[^"']+)["']""", RegexOption.IGNORE_CASE)
+                val html = conn.inputStream.bufferedReader().use { it.readText().take(1024 * 1024) }
+                conn.disconnect()
+
+                val videoUrl = Regex(""""video_url"\s*:\s*"(https?:[^"]+)"""")
+                    .find(html)?.groupValues?.getOrNull(1)?.unescapeJsonUrl()
+                    ?: Regex("""<video[^>]+src=["'](https?://[^"']+)["']""", RegexOption.IGNORE_CASE)
+                        .find(html)?.groupValues?.getOrNull(1)?.replace("&amp;", "&")
+
+                val displayUrls = linkedSetOf<String>()
+                Regex(""""display_url"\s*:\s*"(https?:[^"]+)"""")
                     .findAll(html)
-                    .forEach { m -> displayUrls.add(m.groupValues[1].replace("&amp;", "&")) }
-            }
+                    .forEach { m ->
+                        val u = m.groupValues[1].unescapeJsonUrl()
+                        if (!croppedUrlRegex.containsMatchIn(u) && !ZarditParser.isBrandLogoOrLoginPage(null, u)) {
+                            displayUrls.add(u)
+                        }
+                    }
+                if (displayUrls.isEmpty()) {
+                    Regex("""class=["'][^"']*EmbeddedMediaImage[^"']*["'][^>]+src=["'](https?://[^"']+)["']""", RegexOption.IGNORE_CASE)
+                        .findAll(html)
+                        .forEach { m ->
+                            val u = m.groupValues[1].replace("&amp;", "&")
+                            if (!ZarditParser.isBrandLogoOrLoginPage(null, u)) displayUrls.add(u)
+                        }
+                }
 
-            if (!videoUrl.isNullOrBlank()) {
-                val size = probeUrlSize(videoUrl)
-                val thumb = displayUrls.firstOrNull()
-                return@runCatching MediaPreview(
-                    mediaId = shortcode,
-                    url = url,
-                    title = "Instagram Reel ($shortcode)",
-                    author = "Instagram",
-                    platform = "INSTAGRAM · VIDEO",
-                    durationText = "",
-                    thumbnailUrl = thumb,
-                    videoOptions = listOf(
-                        VideoOption(1080, "Original", "HD", "MP4 · Direct stream", size),
-                    ),
-                    audioOptions = defaultAudioOptions.map {
-                        it.copy(approxSizeBytes = size?.let { s -> (s / 5L).coerceAtLeast(80_000L) })
-                    },
-                    imageUrls = listOfNotNull(thumb),
-                    directVideoUrl = videoUrl,
-                    sanitizedTitle = "Instagram_$shortcode",
-                )
-            }
+                if (!videoUrl.isNullOrBlank()) {
+                    val size = probeUrlSize(videoUrl)
+                    val thumb = displayUrls.firstOrNull()
+                    return@runCatching MediaPreview(
+                        mediaId = shortcode,
+                        url = url,
+                        title = "Instagram Reel ($shortcode)",
+                        author = "Instagram",
+                        platform = "INSTAGRAM · VIDEO",
+                        durationText = "",
+                        thumbnailUrl = thumb,
+                        videoOptions = listOf(
+                            VideoOption(1080, "Original", "HD", "MP4 · Direct stream", size),
+                        ),
+                        audioOptions = defaultAudioOptions.map {
+                            it.copy(approxSizeBytes = size?.let { s -> (s / 5L).coerceAtLeast(80_000L) })
+                        },
+                        imageUrls = listOfNotNull(thumb),
+                        directVideoUrl = videoUrl,
+                        sanitizedTitle = "Instagram_$shortcode",
+                    )
+                }
 
-            if (displayUrls.isNotEmpty()) {
-                val list = displayUrls.toList()
-                return@runCatching MediaPreview(
-                    mediaId = shortcode,
-                    url = url,
-                    title = "Instagram Post ($shortcode)",
-                    author = "Instagram · ${list.size} image${if (list.size == 1) "" else "s"}",
-                    platform = "INSTAGRAM · IMAGE",
-                    durationText = "${list.size} image${if (list.size == 1) "" else "s"}",
-                    thumbnailUrl = list.first(),
-                    videoOptions = emptyList(),
-                    audioOptions = emptyList(),
-                    imageUrls = list,
-                    sanitizedTitle = "Instagram_$shortcode",
-                )
-            }
-            null
-        }.getOrNull()
+                if (displayUrls.isNotEmpty()) {
+                    val list = displayUrls.toList()
+                    return@runCatching MediaPreview(
+                        mediaId = shortcode,
+                        url = url,
+                        title = "Instagram Post ($shortcode)",
+                        author = "Instagram · ${list.size} image${if (list.size == 1) "" else "s"}",
+                        platform = "INSTAGRAM · IMAGE",
+                        durationText = "${list.size} image${if (list.size == 1) "" else "s"}",
+                        thumbnailUrl = list.first(),
+                        videoOptions = emptyList(),
+                        audioOptions = emptyList(),
+                        imageUrls = list,
+                        sanitizedTitle = "Instagram_$shortcode",
+                    )
+                }
+                null
+            }.getOrNull()
+            if (found != null) return found
+        }
+        return null
     }
 
     private fun fetchWithInstagramCookies(context: Context, url: String): MediaPreview? = runCatching {
@@ -1505,7 +1557,10 @@ object ZarditEngine {
                     )
                 }
 
-                if (!imgUrl.isNullOrBlank() && imgUrl.startsWith("http") && firstImageFallback == null) {
+                if (!imgUrl.isNullOrBlank() && imgUrl.startsWith("http") &&
+                    !ZarditParser.isBrandLogoOrLoginPage(title, imgUrl) &&
+                    firstImageFallback == null
+                ) {
                     firstImageFallback = MediaPreview(
                         mediaId = postShortcode ?: url.hashCode().toString(),
                         url = url,

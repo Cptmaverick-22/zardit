@@ -24,7 +24,7 @@ object FacebookAuth {
     private val allowedCookieNames = setOf("c_user", "xs", "datr", "sb")
 
     fun hasSession(context: Context): Boolean =
-        File(context.applicationContext.filesDir, SESSION_FILE).isFile
+        File(context.applicationContext.filesDir, SESSION_FILE).isFile && getCookieHeader(context) != null
 
     fun extractMinimalCookies(rawCookieHeader: String?): Map<String, String> =
         ZarditParser.extractMinimalFacebookCookies(rawCookieHeader)

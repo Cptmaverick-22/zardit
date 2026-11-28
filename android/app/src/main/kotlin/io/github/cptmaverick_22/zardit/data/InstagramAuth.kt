@@ -20,10 +20,10 @@ object InstagramAuth {
     private const val GCM_IV_LEN = 12
     private const val GCM_TAG_BITS = 128
 
-    private val allowedCookieNames = setOf("sessionid", "csrftoken", "ds_user_id")
+    private val allowedCookieNames = setOf("sessionid", "csrftoken", "ds_user_id", "mid", "ig_did", "datr", "rur", "ig_nrcb")
 
     fun hasSession(context: Context): Boolean =
-        File(context.applicationContext.filesDir, SESSION_FILE).isFile
+        File(context.applicationContext.filesDir, SESSION_FILE).isFile && getCookieHeader(context) != null
 
     fun extractMinimalCookies(rawCookieHeader: String?): Map<String, String> =
         io.github.cptmaverick_22.zardit.downloader.ZarditParser.extractMinimalInstagramCookies(rawCookieHeader)

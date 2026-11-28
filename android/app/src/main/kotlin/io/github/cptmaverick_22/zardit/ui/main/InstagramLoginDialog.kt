@@ -74,7 +74,7 @@ fun InstagramLoginDialog(
                             fontWeight = FontWeight.Bold,
                         )
                         Text(
-                            text = "Encrypted locally on your device · Never shared",
+                            text = "Encrypted on device · Keep open only until login finishes",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -153,14 +153,13 @@ fun InstagramLoginDialog(
                                     if (finished) return
                                     val raw = cm.getCookie("https://www.instagram.com")
                                     val minimal = InstagramAuth.extractMinimalCookies(raw)
-                                    if (minimal.isNotEmpty()) {
+                                    val onLoginPage = url?.contains("/accounts/login") == true ||
+                                        url?.contains("/challenge/") == true ||
+                                        url?.contains("/two_factor") == true
+                                    val settled = "ds_user_id" in minimal && !onLoginPage
+                                    if (minimal.isNotEmpty() && (settled || "mid" in minimal)) {
                                         finished = true
                                         InstagramAuth.saveCookies(context, minimal)
-                                        view?.apply {
-                                            clearHistory()
-                                            clearCache(true)
-                                        }
-                                        cm.removeAllCookies(null)
                                         cm.flush()
                                         onConnected()
                                     }

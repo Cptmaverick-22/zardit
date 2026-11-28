@@ -1227,6 +1227,41 @@ def _probe_direct_image(url):
     return None
 
 
+def _is_brand_logo_or_login_page(title, img_url):
+    """True when metadata points to a static platform brand icon or login shell."""
+
+    low_img = (img_url or "").lower()
+    if any(
+        tok in low_img
+        for tok in (
+            "rsrc.php",
+            "static.cdninstagram.com",
+            "static.xx.fbcdn.net",
+            "instagram_logo",
+            "threads-logo",
+            "/images/instagram",
+            "favicon",
+        )
+    ):
+        return True
+
+    low_title = (title or "").strip().lower()
+    if low_title in {
+        "instagram",
+        "log in • instagram",
+        "login • instagram",
+        "facebook",
+        "log in to facebook",
+        "log in or sign up to view",
+        "threads",
+        "x",
+        "sign up",
+    } or low_title.startswith(("log in", "login •")):
+        return True
+
+    return False
+
+
 def _extract_og_image(url):
     try:
         parsed = urlparse(url)
@@ -1261,6 +1296,8 @@ def _extract_og_image(url):
         return None
 
     title = meta.get("og:title") or meta.get("twitter:title") or ""
+    if _is_brand_logo_or_login_page(title, img_url):
+        return None
     width = int(meta["og:image:width"]) if (meta.get("og:image:width") or "").isdigit() else None
     height = int(meta["og:image:height"]) if (meta.get("og:image:height") or "").isdigit() else None
     return _make_image_info(

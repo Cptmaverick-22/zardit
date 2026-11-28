@@ -32,7 +32,16 @@ object ZarditParser {
     private val dashBaseUrlRegex = Regex("""<BaseURL[^>]*>(.*?)</BaseURL>""", RegexOption.DOT_MATCHES_ALL)
     private val blockedHostSuffixes = listOf(".localhost", ".localdomain", ".local", ".internal", ".home", ".lan")
     private val numericIpOrV6Regex = Regex("""^(?:\d{1,3}(?:\.\d{1,3}){3}|.*:.*)$""")
-    private val allowedIgCookies = setOf("sessionid", "csrftoken", "ds_user_id")
+    private val allowedIgCookies = setOf(
+        "sessionid",
+        "csrftoken",
+        "ds_user_id",
+        "mid",
+        "ig_did",
+        "datr",
+        "rur",
+        "ig_nrcb",
+    )
     private val allowedFbCookies = setOf("c_user", "xs", "datr", "sb")
     private val croppedFbRegex = Regex(
         """(?:/[sp]\d+x\d+/|/c\d+\.\d+\.\d+\.\d+|dst-jpg_e\d+_[sp]|sqp=|profile_pic)""",
@@ -94,6 +103,34 @@ object ZarditParser {
     fun isUnsupportedRedditUrl(url: String): Boolean {
         val lower = url.lowercase(Locale.US)
         return "reddit.com" in lower || "redd.it" in lower || "v.redd.it" in lower
+    }
+
+    fun isBrandLogoOrLoginPage(title: String?, imgUrl: String?): Boolean {
+        val lowImg = (imgUrl ?: "").lowercase(Locale.US)
+        if (
+            "rsrc.php" in lowImg ||
+            "static.cdninstagram.com" in lowImg ||
+            "static.xx.fbcdn.net" in lowImg ||
+            "instagram_logo" in lowImg ||
+            "threads-logo" in lowImg ||
+            "/images/instagram" in lowImg ||
+            "favicon" in lowImg
+        ) {
+            return true
+        }
+        val cleanTitle = (title ?: "").trim()
+        val lowTitle = cleanTitle.lowercase(Locale.US)
+        return lowTitle in setOf(
+            "instagram",
+            "log in • instagram",
+            "login • instagram",
+            "facebook",
+            "log in to facebook",
+            "log in or sign up to view",
+            "threads",
+            "x",
+            "sign up",
+        ) || lowTitle.startsWith("log in") || lowTitle.startsWith("login •")
     }
 
     fun detectPlatformName(url: String): String {
