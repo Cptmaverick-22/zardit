@@ -32,7 +32,7 @@ jobs:
 
       - name: Run unit tests & build slim arm64-v8a APKs
         working-directory: android
-        run: ./gradlew testDebugUnitTest :app:assembleRelease :ffmpeg-addon:assembleRelease --no-daemon
+        run: ./gradlew testDebugUnitTest :app:assembleRelease :ffmpeg-addon:assembleRelease --no-daemon -Dorg.gradle.jvmargs="-Xmx3072m -XX:MaxMetaspaceSize=1024m"
 
       - name: Upload Android APK artifacts
         uses: actions/upload-artifact@v6

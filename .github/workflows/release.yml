@@ -141,7 +141,7 @@ jobs:
             echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > "$RUNNER_TEMP/zardit-release.jks"
             export ANDROID_KEYSTORE_FILE="$RUNNER_TEMP/zardit-release.jks"
           fi
-          ./gradlew testDebugUnitTest :app:assembleRelease :ffmpeg-addon:assembleRelease --no-daemon
+          ./gradlew testDebugUnitTest :app:assembleRelease :ffmpeg-addon:assembleRelease --no-daemon -Dorg.gradle.jvmargs="-Xmx3072m -XX:MaxMetaspaceSize=1024m"
 
       - name: Package Android APKs
         run: |
